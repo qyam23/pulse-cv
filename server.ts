@@ -44,44 +44,44 @@ async function startServer() {
     const hfKey = process.env.HUGGING_FACE_API_KEY;
 
     if (!hfKey) {
-      return res.status(500).json({ error: "Hugging Face API key not configured." });
+      return res.status(401).json({ 
+        error: "HF_KEY_MISSING", 
+        message: "Hugging Face API key not configured in Settings." 
+      });
     }
 
     try {
-      // Prompt for Thinking Model (DeepSeek-R1 style) - Enhanced for Language & Patterns
+      // Prompt for Thinking Model (DeepSeek-R1 style)
       const prompt = `
         <instruction>
         You are a World-Class Executive Career Architect and Master ATS Auditor.
         Analyze the following Resume against the Job Description with extreme precision.
         
         RULES:
-        1. LANGUAGE: Detect the language of the inputs. If the Resume is in Hebrew, provide the entire analysis in Hebrew. If it's in English, respond in English. If they are mixed, prioritize the language of the Resume.
-        2. PATTERNS: Audit the resume against industry-standard patterns (Chronological, Functional, or Hybrid). Check for "Action Verbs", "Quantifiable Results", and "Section Hierarchy".
-        3. OUTPUT: Return ONLY valid JSON. No conversational text before or after the JSON.
+        1. LANGUAGE: Detect the language of the inputs. If the Resume is in Hebrew, provide the entire analysis in Hebrew. If it's in English, respond in English.
+        2. PATTERNS: Audit the resume against industry-standard patterns.
+        3. OUTPUT: Return ONLY valid JSON.
         </instruction>
 
-        RESUME:
-        ${resumeText}
-
-        JOB DESCRIPTION:
-        ${jobDescription}
+        RESUME: ${resumeText}
+        JD: ${jobDescription}
 
         Provide a DEEP ANALYSIS in JSON format:
         {
           "matchScore": number,
-          "profileSummary": "string (in the detected language)",
+          "profileSummary": "string",
           "missingKeywords": ["string"],
           "strengths": ["string"],
           "weaknesses": ["string"],
-          "recommendations": ["string (based on industry patterns like Harvard/Google formats)"],
+          "recommendations": ["string"],
           "atsVisibilityScore": number,
           "jobFitDecision": "High" | "Medium" | "Low",
-          "tailoredBio": "string (Professional bio tailored to the JD)",
+          "tailoredBio": "string",
           "bulletPointOptimization": [
             {
               "original": "string",
-              "optimized": "string (high-impact version)",
-              "rationale": "string (why this change helps with ATS or recruiters)"
+              "optimized": "string",
+              "rationale": "string"
             }
           ]
         }
@@ -99,26 +99,18 @@ async function startServer() {
       );
 
       let text = response.data[0]?.generated_text || "";
-      
-      // Strip thinking process if present (DeepSeek-R1 format)
-      if (text.includes("</think>")) {
-        text = text.split("</think>")[1].trim();
-      }
-
-      // Cleanup code blocks if present
+      if (text.includes("</think>")) text = text.split("</think>")[1].trim();
       text = text.replace(/```json/g, "").replace(/```/g, "").trim();
 
       try {
-        const jsonResult = JSON.parse(text);
-        res.json(jsonResult);
+        res.json(JSON.parse(text));
       } catch (parseError) {
-        console.error("Failed to parse AI response:", text);
-        res.status(500).json({ error: "AI returned invalid JSON format." });
+        res.status(500).json({ error: "AI response parse failed" });
       }
 
     } catch (error: any) {
       console.error("HF Analysis error:", error.response?.data || error.message);
-      res.status(500).json({ error: "AI Analysis failed via Hugging Face." });
+      res.status(500).json({ error: "HF_API_ERROR", message: "AI Analysis failed via Hugging Face." });
     }
   });
 

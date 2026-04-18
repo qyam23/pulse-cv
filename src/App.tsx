@@ -30,12 +30,15 @@ import {
   Globe
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenAI, Type } from "@google/genai";
 import * as pdfjs from 'pdfjs-dist';
 import mammoth from 'mammoth';
 
 // Initialize PDF Worker correctly for version 4.10.38
 // We use the .mjs version because modern pdfjs-dist often uses dynamic import()
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`;
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 interface AnalysisResult {
   matchScore: number;
@@ -165,17 +168,66 @@ export default function App() {
     setExtractedKeywords(extractScanWords());
 
     try {
-      const response = await fetch('/api/analyze', {
+      let response = await fetch('/api/analyze', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resumeText, jobDescription }),
       });
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || "Analysis failed.");
+        
+        // If HF Key is missing, fallback to Gemini directly from frontend
+        if (errorData.error === "HF_KEY_MISSING") {
+          console.log("Hugging Face key missing, falling back to Gemini...");
+          const prompt = `
+            Analyze Resume vs Job Description. Provide deep analysis in JSON.
+            LANGUAGE: Detect and respond in the same language as the Resume.
+            RESUME: ${resumeText}
+            JD: ${jobDescription}
+          `;
+          
+          const result = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: prompt,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  matchScore: { type: Type.NUMBER },
+                  profileSummary: { type: Type.STRING },
+                  missingKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  atsVisibilityScore: { type: Type.NUMBER },
+                  jobFitDecision: { type: Type.STRING },
+                  tailoredBio: { type: Type.STRING },
+                  bulletPointOptimization: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        original: { type: Type.STRING },
+                        optimized: { type: Type.STRING },
+                        rationale: { type: Type.STRING }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          });
+          
+          if (result.text) {
+            setResult(JSON.parse(result.text));
+            window.scrollTo({ top: 400, behavior: 'smooth' });
+            setTimeout(() => setShowUpsell(true), 2000);
+            return;
+          }
+        }
+        throw new Error(errorData.message || "Analysis failed.");
       }
 
       const data = await response.json();
