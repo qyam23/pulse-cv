@@ -53,6 +53,10 @@ interface AnalysisResult {
     optimized: string;
     rationale: string;
   }[];
+  scoringMode?: string;
+  scoreLocked?: boolean;
+  cached?: boolean;
+  aiWarning?: string;
 }
 
 type UpsellVariant = 'low' | 'medium' | 'high';
@@ -545,12 +549,17 @@ export default function App() {
                   <div className="absolute -right-20 -top-20 w-80 h-80 bg-indigo-600/20 rounded-full blur-[100px] group-hover:bg-indigo-600/30 transition-all duration-700" />
                   <div className="relative z-10 flex flex-col md:flex-row justify-between md:items-center gap-10">
                     <div>
-                      <p className="text-indigo-300 font-bold uppercase tracking-widest text-xs mb-4">Neural Match Alignment</p>
+                      <p className="text-indigo-300 font-bold uppercase tracking-widest text-xs mb-4">Deterministic ATS Match</p>
                       <h2 className="text-8xl font-black tracking-tighter mb-4">{result.matchScore}%</h2>
                       <div className="flex flex-wrap gap-3">
                          <div className="bg-white/10 backdrop-blur-md px-4 py-2 rounded-xl text-xs font-bold border border-white/10">
                            ATS Visibility: {result.atsVisibilityScore}/100
                          </div>
+                         {result.scoreLocked && (
+                           <div className="bg-emerald-400/15 text-emerald-200 backdrop-blur-md px-4 py-2 rounded-xl text-xs font-bold border border-emerald-300/20">
+                             Score locked for identical inputs
+                           </div>
+                         )}
                       </div>
                     </div>
                     <div className="text-center md:text-right">
@@ -559,7 +568,7 @@ export default function App() {
                          result.jobFitDecision === 'Medium' ? 'bg-amber-400 text-slate-900 shadow-amber-500/20' :
                          'bg-rose-500 text-white shadow-rose-500/20'
                        }`}>
-                         {result.jobFitDecision} Hiring Probability
+                         {result.jobFitDecision} ATS Alignment
                        </div>
                     </div>
                   </div>
@@ -571,10 +580,15 @@ export default function App() {
                    </div>
                    <h3 className="font-bold text-xl text-slate-800 mb-2">Authenticated Report</h3>
                    <p className="text-slate-500 text-sm leading-relaxed">
-                     Your profile was audited against 420+ recruiter heuristic signals.
+                     Your score is computed deterministically. AI is used only for explanation and rewrite suggestions.
                    </p>
                 </div>
               </div>
+              {result.aiWarning && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm font-semibold text-amber-800">
+                  {result.aiWarning}
+                </div>
+              )}
 
               {/* Core Analysis cards */}
               <div className="grid lg:grid-cols-2 gap-8">

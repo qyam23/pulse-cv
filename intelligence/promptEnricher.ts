@@ -122,6 +122,7 @@ RULES:
 1. LANGUAGE: Detect the language of the inputs. If the Resume is in Hebrew, provide the entire analysis in Hebrew. If it's in English, respond in English.
 2. OUTPUT: Return ONLY valid JSON matching the schema below.
 3. GROUNDING: Your analysis must be grounded in the structured pre-analysis provided below.
+4. IMPORTANT: Do not calculate or change ATS scores. The server computes scores deterministically. You only provide explanations and rewrite suggestions.
 </instruction>
 
 <pre_analysis>
@@ -141,15 +142,7 @@ JD: ${jobDescription}
 
 Provide DEEP ANALYSIS in JSON:
 {
-  "matchScore": number,
   "profileSummary": "string",
-  "missingKeywords": ["string"],
-  "matchedKeywords": ["string"],
-  "strengths": ["string"],
-  "weaknesses": ["string"],
-  "recommendations": ["string"],
-  "atsVisibilityScore": number,
-  "jobFitDecision": "High" | "Medium" | "Low",
   "tailoredBio": "string",
   "bulletPointOptimization": [
     { "original": "string", "optimized": "string", "rationale": "string" }

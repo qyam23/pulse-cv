@@ -3,6 +3,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import crypto from "crypto";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import dns from "dns/promises";
@@ -16,6 +17,7 @@ const __dirname = path.dirname(__filename);
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
+  const analysisCache = new Map<string, any>();
 
   app.use(express.json({ limit: "2mb" }));
 
@@ -40,6 +42,7 @@ async function startServer() {
       provider,
       aiConfigured: hasServerSideAiToken(provider),
       model: provider.includes("huggingface") || provider === "hf" ? getHuggingFaceModels()[0] : process.env.LM_STUDIO_MODEL || null,
+      scoringMode: "deterministic",
     });
   });
 
@@ -50,8 +53,128 @@ async function startServer() {
       aiConfigured: hasServerSideAiToken(provider),
       model: provider.includes("huggingface") || provider === "hf" ? getHuggingFaceModels()[0] : process.env.LM_STUDIO_MODEL || null,
       keyVisibleToBrowser: false,
+      scoringMode: "deterministic",
     });
   });
+
+  const STOPWORDS = new Set([
+    "and", "the", "for", "with", "you", "your", "are", "our", "this", "that", "will", "from", "have", "has", "was", "were",
+    "job", "role", "work", "team", "site", "company", "required", "requirements", "experience", "skills", "ability",
+    "של", "על", "עם", "או", "את", "זה", "זו", "הוא", "היא", "אנחנו", "אתה", "אתם", "תפקיד", "עבודה", "דרישות", "ניסיון",
+  ]);
+
+  function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function normalizedForCache(value: string): string {
+    return value.toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function analysisCacheKey(resumeText: string, jobDescription: string): string {
+    return crypto
+      .createHash("sha256")
+      .update(`${normalizedForCache(resumeText)}\n---JD---\n${normalizedForCache(jobDescription)}`)
+      .digest("hex");
+  }
+
+  function tokenize(value: string): string[] {
+    const matches = normalizedForCache(value).match(/[a-z0-9+#.]{3,}|[\u0590-\u05FF]{2,}/g) || [];
+    return matches
+      .map((token) => token.replace(/^[^a-z0-9\u0590-\u05FF+#.]+|[^a-z0-9\u0590-\u05FF+#.]+$/g, ""))
+      .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+  }
+
+  function uniqueOrdered(values: string[]): string[] {
+    const seen = new Set<string>();
+    const output: string[] = [];
+    for (const value of values) {
+      if (!seen.has(value)) {
+        seen.add(value);
+        output.push(value);
+      }
+    }
+    return output;
+  }
+
+  function extractDeterministicKeywords(jobDescription: string): string[] {
+    const tokens = tokenize(jobDescription);
+    const counts = new Map<string, number>();
+    tokens.forEach((token) => counts.set(token, (counts.get(token) || 0) + 1));
+    const ranked = uniqueOrdered(tokens)
+      .map((token) => ({ token, count: counts.get(token) || 0 }))
+      .sort((a, b) => b.count - a.count || a.token.localeCompare(b.token, "he"));
+    return ranked.slice(0, 28).map((entry) => entry.token);
+  }
+
+  function buildDeterministicAnalysis(resumeText: string, jobDescription: string) {
+    const resumeTokens = new Set(tokenize(resumeText));
+    const jdKeywords = extractDeterministicKeywords(jobDescription);
+    const matchedKeywords = jdKeywords.filter((keyword) => resumeTokens.has(keyword));
+    const missingKeywords = jdKeywords.filter((keyword) => !resumeTokens.has(keyword));
+    const coverage = jdKeywords.length ? matchedKeywords.length / jdKeywords.length : 0;
+    const hasNumbers = /(?:\d+%|\d+\s*(?:years|שנים|לקוחות|פרויקטים|עובדים|קווים|sites?))/i.test(resumeText);
+    const hasEnglish = /english|אנגלית/i.test(resumeText);
+    const hasLeadership = /lead|manage|manager|ניהול|הובלה|מנהל|הובל/i.test(resumeText);
+    const hasTechnicalEvidence = matchedKeywords.length >= Math.max(3, Math.ceil(jdKeywords.length * 0.2));
+    const evidenceBoost = (hasNumbers ? 7 : 0) + (hasEnglish ? 3 : 0) + (hasLeadership ? 4 : 0) + (hasTechnicalEvidence ? 6 : 0);
+    const matchScore = Math.round(clamp(28 + coverage * 58 + evidenceBoost, 15, 92));
+    const atsVisibilityScore = Math.round(clamp(25 + coverage * 60 + (hasNumbers ? 5 : 0) + (hasLeadership ? 5 : 0), 10, 90));
+    const jobFitDecision = matchScore >= 78 ? "High" : matchScore >= 55 ? "Medium" : "Low";
+    const rtl = /[\u0590-\u05FF]/.test(`${resumeText} ${jobDescription}`);
+
+    return {
+      matchScore,
+      atsVisibilityScore,
+      jobFitDecision,
+      matchedKeywords: matchedKeywords.slice(0, 12),
+      missingKeywords: missingKeywords.slice(0, 12),
+      strengths: matchedKeywords.length
+        ? matchedKeywords.slice(0, 5).map((keyword) => rtl ? `קיימת ראיה למילת המפתח: ${keyword}` : `Evidence found for: ${keyword}`)
+        : [rtl ? "נמצאו מעט אותות התאמה ישירים לתיאור המשרה." : "Limited direct role keywords were found."],
+      weaknesses: missingKeywords.length
+        ? missingKeywords.slice(0, 5).map((keyword) => rtl ? `חסרה ראיה ברורה ל-${keyword}` : `Missing clear evidence for ${keyword}`)
+        : [rtl ? "לא זוהו פערי מילות מפתח מרכזיים בבדיקה הדטרמיניסטית." : "No major keyword gaps detected by the deterministic check."],
+      recommendations: missingKeywords.length
+        ? missingKeywords.slice(0, 6).map((keyword) => rtl ? `אם זה נכון ומגובה בניסיון אמיתי, הוסף דוגמה שמוכיחה ${keyword}.` : `If accurate, add a concrete evidence line for ${keyword}.`)
+        : [rtl ? "שמרו על ניסוח מדויק ומבוסס ראיות, בלי להוסיף ניסיון שלא קיים." : "Keep wording evidence-based and do not add experience that is not real."],
+      profileSummary: rtl
+        ? `ציון ATS דטרמיניסטי: ${matchScore}/100. הציון מבוסס על כיסוי מילות מפתח וראיות בקורות החיים, לא על החלטת AI.`
+        : `Deterministic ATS score: ${matchScore}/100. The score is based on keyword/evidence coverage in the resume, not an AI judgment.`,
+      tailoredBio: rtl
+        ? "שכבת AI יכולה להציע ניסוח טוב יותר, אבל הציון עצמו נשאר קבוע ודטרמיניסטי."
+        : "The AI layer can improve wording, but the score itself remains fixed and deterministic.",
+      bulletPointOptimization: missingKeywords.slice(0, 3).map((keyword) => ({
+        original: rtl ? `אין ראיה ברורה ל-${keyword}` : `No clear evidence for ${keyword}`,
+        optimized: rtl ? `אם זה נכון: הוסף הישג/פרויקט שמדגים ${keyword}` : `If accurate: add a project or achievement that demonstrates ${keyword}`,
+        rationale: rtl ? "שיפור מבוסס ראיות בלבד, ללא המצאת ניסיון." : "Evidence-based improvement only; do not invent experience.",
+      })),
+      scoringMode: "deterministic",
+    };
+  }
+
+  function mergeDeterministicTruth(deterministic: any, aiResult: any, provider: string, model?: string) {
+    return {
+      ...deterministic,
+      profileSummary: typeof aiResult?.profileSummary === "string" && aiResult.profileSummary.trim() ? aiResult.profileSummary : deterministic.profileSummary,
+      tailoredBio: typeof aiResult?.tailoredBio === "string" && aiResult.tailoredBio.trim() ? aiResult.tailoredBio : deterministic.tailoredBio,
+      bulletPointOptimization: Array.isArray(aiResult?.bulletPointOptimization) && aiResult.bulletPointOptimization.length
+        ? aiResult.bulletPointOptimization.slice(0, 4)
+        : deterministic.bulletPointOptimization,
+      provider,
+      model,
+      scoringMode: "deterministic",
+      scoreLocked: true,
+    };
+  }
+
+  function rememberAnalysis(key: string, value: any) {
+    analysisCache.set(key, value);
+    if (analysisCache.size > 100) {
+      const oldest = analysisCache.keys().next().value;
+      analysisCache.delete(oldest);
+    }
+  }
 
   async function isSafeUrl(rawUrl: string): Promise<boolean> {
     try {
@@ -138,6 +261,7 @@ async function startServer() {
   }
 
   async function analyzeWithLmStudio(resumeText: string, jobDescription: string) {
+    const deterministic = buildDeterministicAnalysis(resumeText, jobDescription);
     const baseUrl = process.env.LM_STUDIO_BASE_URL || "http://localhost:1234/v1";
     const model = await detectLmStudioModel();
     if (!model) {
@@ -173,7 +297,7 @@ async function startServer() {
 
     const text = extractProviderText(response.data);
     const parsed = parseAnalysisJson(text);
-    return { ...parsed, provider: "lmstudio", model };
+    return mergeDeterministicTruth(deterministic, parsed, "lmstudio", model);
   }
 
   function getHuggingFaceToken(): string | undefined {
@@ -190,6 +314,7 @@ async function startServer() {
   }
 
   async function analyzeWithHuggingFaceRouter(resumeText: string, jobDescription: string) {
+    const deterministic = buildDeterministicAnalysis(resumeText, jobDescription);
     const token = getHuggingFaceToken();
     if (!token) {
       const error = new Error("Hugging Face token is not configured.");
@@ -214,7 +339,7 @@ async function startServer() {
               },
               { role: "user", content: prompt },
             ],
-            temperature: 0.2,
+            temperature: 0,
             max_tokens: 1600,
             stream: false,
             response_format: { type: "json_object" },
@@ -230,7 +355,7 @@ async function startServer() {
 
         const text = extractProviderText(response.data);
         const parsed = parseAnalysisJson(text);
-        return { ...parsed, provider: "huggingface-router", model };
+        return mergeDeterministicTruth(deterministic, parsed, "huggingface-router", model);
       } catch (error: any) {
         lastError = error;
         const status = error.response?.status;
@@ -286,27 +411,37 @@ async function startServer() {
       });
     }
 
+    const cacheKey = analysisCacheKey(resumeText, jobDescription);
+    const cached = analysisCache.get(cacheKey);
+    if (cached) {
+      return res.json({ ...cached, cached: true });
+    }
+
+    const deterministic = buildDeterministicAnalysis(resumeText, jobDescription);
+
     if (provider === "lmstudio") {
       try {
-        return res.json(await analyzeWithLmStudio(resumeText, jobDescription));
+        const result = await analyzeWithLmStudio(resumeText, jobDescription);
+        rememberAnalysis(cacheKey, result);
+        return res.json(result);
       } catch (error: any) {
         console.error("LM Studio analysis error:", error.response?.data || error.message);
-        return res.status(503).json({
-          error: error.code || "LM_STUDIO_API_ERROR",
-          message: "Local AI analysis failed. Make sure LM Studio Local Server is running and a model is loaded.",
-        });
+        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Local AI enhancement failed; deterministic ATS score was still completed." };
+        rememberAnalysis(cacheKey, result);
+        return res.json(result);
       }
     }
 
     if (provider === "huggingface" || provider === "hf" || provider === "huggingface-router") {
       try {
-        return res.json(await analyzeWithHuggingFaceRouter(resumeText, jobDescription));
+        const result = await analyzeWithHuggingFaceRouter(resumeText, jobDescription);
+        rememberAnalysis(cacheKey, result);
+        return res.json(result);
       } catch (error: any) {
         console.error("Hugging Face router analysis error:", error.response?.data || error.message);
-        return res.status(error.code === "HF_TOKEN_MISSING" ? 401 : 503).json({
-          error: error.code || "HF_ROUTER_API_ERROR",
-          message: "Hugging Face REST analysis failed. Check HF_TOKEN/HUGGING_FACE_API_KEY and model availability.",
-        });
+        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Hugging Face enhancement failed; deterministic ATS score was still completed." };
+        rememberAnalysis(cacheKey, result);
+        return res.json(result);
       }
     }
 
@@ -336,22 +471,44 @@ async function startServer() {
       const text = cleanAiText(extractProviderText(response.data));
 
       try {
-        res.json(parseAnalysisJson(text));
+        const result = mergeDeterministicTruth(deterministic, parseAnalysisJson(text), "huggingface-inference-api", "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B");
+        rememberAnalysis(cacheKey, result);
+        res.json(result);
       } catch (parseError) {
-        res.status(500).json({ error: "AI response parse failed" });
+        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "AI response parse failed; deterministic ATS score was still completed." };
+        rememberAnalysis(cacheKey, result);
+        res.json(result);
       }
 
     } catch (error: any) {
       console.error("HF Analysis error:", error.response?.data || error.message);
-      res.status(500).json({ error: "HF_API_ERROR", message: "AI Analysis failed via Hugging Face." });
+      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "AI analysis failed; deterministic ATS score was still completed." };
+      rememberAnalysis(cacheKey, result);
+      res.json(result);
     }
   });
 
   app.post("/api/analyze-gemini", async (req, res) => {
     const { resumeText, jobDescription } = req.body;
+    if (!resumeText || !jobDescription || typeof resumeText !== "string" || typeof jobDescription !== "string") {
+      return res.status(400).json({
+        error: "INPUT_MISSING",
+        message: "Resume text and job description are required.",
+      });
+    }
+
+    const cacheKey = analysisCacheKey(resumeText, jobDescription);
+    const cached = analysisCache.get(cacheKey);
+    if (cached) {
+      return res.json({ ...cached, cached: true });
+    }
+
+    const deterministic = buildDeterministicAnalysis(resumeText, jobDescription);
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return res.status(401).json({ error: "GEMINI_KEY_MISSING", message: "Gemini API key is not configured server-side." });
+      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Gemini key is not configured; deterministic ATS score was still completed." };
+      rememberAnalysis(cacheKey, result);
+      return res.json(result);
     }
     try {
       const prompt = buildPrompt(resumeText, jobDescription);
@@ -389,10 +546,14 @@ async function startServer() {
           }
         }
       });
-      res.json(JSON.parse(response.text || "{}"));
+      const result = mergeDeterministicTruth(deterministic, JSON.parse(response.text || "{}"), "gemini", "gemini-3-flash-preview");
+      rememberAnalysis(cacheKey, result);
+      res.json(result);
     } catch (error: any) {
       console.error("Gemini analysis error:", error.message);
-      res.status(500).json({ error: "GEMINI_API_ERROR", message: "AI analysis failed via Gemini fallback." });
+      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Gemini enhancement failed; deterministic ATS score was still completed." };
+      rememberAnalysis(cacheKey, result);
+      res.json(result);
     }
   });
 
