@@ -58,6 +58,7 @@ interface AnalysisResult {
 type UpsellVariant = 'low' | 'medium' | 'high';
 
 const isStaticPagesRuntime =
+  (import.meta as any).env?.VITE_STATIC_PREVIEW === 'true' ||
   typeof window !== 'undefined' &&
   window.location.hostname.endsWith('github.io');
 
@@ -103,6 +104,21 @@ function buildStaticPreviewAnalysis(resumeText: string, jobDescription: string):
       rationale: rtl ? 'GitHub Pages אינו מפעיל backend. זהו ניסוח דמו בלבד.' : 'GitHub Pages does not run the backend. This is preview-only guidance.',
     })),
   };
+}
+
+async function readApiError(response: Response): Promise<string> {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    const errorData = await response.json();
+    return errorData.message || errorData.error || "Analysis failed.";
+  }
+
+  const text = await response.text();
+  if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+    return "The AI backend is not available in this static site. Run the local backend with run_site_huggingface.bat, or use the static preview mode.";
+  }
+
+  return text || "Analysis failed.";
 }
 
 export default function App() {
@@ -289,10 +305,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorMessage = await readApiError(response);
         
         // If HF key is missing, fallback to Gemini through the backend only.
-        if (["HF_KEY_MISSING", "HF_TOKEN_MISSING"].includes(errorData.error)) {
+        if (["HF_KEY_MISSING", "HF_TOKEN_MISSING"].some((code) => errorMessage.includes(code))) {
           response = await fetch('/api/analyze-gemini', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -303,9 +319,13 @@ export default function App() {
             return;
           }
         }
-        throw new Error(errorData.message || "Analysis failed.");
+        throw new Error(errorMessage);
       }
 
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(await readApiError(response));
+      }
       const data = await response.json();
       finishAnalysis(data);
     } catch (err: any) {

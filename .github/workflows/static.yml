@@ -35,6 +35,7 @@ jobs:
         run: npm run build
         env:
           GITHUB_PAGES: "true"
+          VITE_STATIC_PREVIEW: "true"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
