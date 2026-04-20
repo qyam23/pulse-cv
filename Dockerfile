@@ -2,7 +2,7 @@
 FROM node:20-slim AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
 RUN npm run build
 
@@ -12,11 +12,12 @@ WORKDIR /app
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/server.ts ./
-# Copy other source files needed by tsx in production if necessary
-# Or use a safer approach: pre-compile server.ts
-COPY . .
+COPY --from=builder /app/server.ts ./server.ts
+COPY --from=builder /app/intelligence ./intelligence
 
-EXPOSE 3000
+EXPOSE 7860
 ENV NODE_ENV=production
+ENV PORT=7860
+ENV AI_PROVIDER=huggingface
+ENV HF_MODEL=Qwen/Qwen3-32B
 CMD ["npm", "start"]

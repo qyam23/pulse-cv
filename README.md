@@ -1,16 +1,50 @@
-# PulseCV AI - DeepSeek Integration
+---
+title: PulseCV AI
+emoji: 📈
+color: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
 
-PulseCV AI is a premium resume analysis platform using DeepSeek-R1 (Thinking Model) to provide deep hireability insights.
+# PulseCV AI - Hugging Face Thinking Analysis
+
+PulseCV AI is a premium resume analysis platform for checking how well a resume matches a specific job description. The public production runtime is designed for a Hugging Face Docker Space, with AI analysis performed server-side through Hugging Face Inference Providers.
 
 ## Deployment Instructions
 
-### 1. Preparation
-Ensure you have a Hugging Face API Token. You can get one for free at [huggingface.co](https://huggingface.co/settings/tokens).
+### 1. Hugging Face Space
+Create or open the Docker Space:
+
+```text
+qyam23/pulse-cv
+```
+
+Use this public URL after deployment:
+
+```text
+https://qyam23-pulse-cv.hf.space/
+```
+
+In **Space Settings > Variables and secrets**, add these server-side values:
+
+```text
+AI_PROVIDER=huggingface
+HF_MODEL=Qwen/Qwen3-32B
+HF_MODEL_CANDIDATES=Qwen/Qwen3-32B,deepseek-ai/DeepSeek-R1-Distill-Qwen-32B,Qwen/Qwen2.5-Coder-32B-Instruct
+HF_TOKEN=<your Hugging Face token as a secret>
+```
+
+Notes:
+
+- `HF_TOKEN` must be a secret, never frontend code.
+- Hugging Face free/low-cost access depends on the current account quota and provider availability.
+- GitHub Pages is static only. It can show a preview and link to the live Space, but it cannot securely run AI analysis by itself.
 
 ### 2. GitHub Setup
 1. Push this code to your GitHub repository.
-2. In your GitHub repository, go to **Settings > Secrets and variables > Actions**.
-3. Add a new repository secret called `HUGGING_FACE_API_KEY` and paste your token.
+2. Keep GitHub Pages enabled only as a static preview/landing page.
+3. Use Hugging Face Docker Space for the real analyzer runtime.
 
 ### 3. Local Run (Docker)
 ```bash
@@ -18,18 +52,18 @@ Ensure you have a Hugging Face API Token. You can get one for free at [huggingfa
 docker build -t pulsecv-ai .
 
 # Run the container
-docker run -p 3000:3000 -e HUGGING_FACE_API_KEY=your_key_here pulsecv-ai
+docker run -p 7860:7860 -e PORT=7860 -e AI_PROVIDER=huggingface -e HF_TOKEN=your_key_here pulsecv-ai
 ```
 
 ### 4. Direct Node Run
 ```bash
 npm install
 npm run build
-HUGGING_FACE_API_KEY=your_key_here npm start
+HF_TOKEN=your_key_here AI_PROVIDER=huggingface npm start
 ```
 
 ## Features
-- **DeepSeek-R1 Integration**: Use the free Hugging Face Inference API.
+- **Hugging Face Thinking Models**: Primary model `Qwen/Qwen3-32B`, with DeepSeek/Qwen fallbacks.
 - **Privacy First**: API keys are handled server-side and never exposed to the client.
 - **RTL Support**: Full Hebrew support for resume analysis.
 - **Neural Scanner**: Immersive visualization during the analysis phase.
@@ -127,4 +161,4 @@ SETUP_HUGGINGFACE_REST.md
 ## Tech Stack
 - Frontend: React (Vite) + Tailwind CSS + Framer Motion
 - Backend: Express (Proxying Hugging Face API)
-- AI Model: `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`
+- AI Model: `Qwen/Qwen3-32B`

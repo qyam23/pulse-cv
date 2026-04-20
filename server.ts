@@ -17,7 +17,41 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
 
-  app.use(express.json());
+  app.use(express.json({ limit: "2mb" }));
+
+  function getActiveProvider(): string {
+    return (process.env.AI_PROVIDER || process.env.LLM_PROVIDER || "huggingface").toLowerCase();
+  }
+
+  function hasServerSideAiToken(provider = getActiveProvider()): boolean {
+    if (provider === "huggingface" || provider === "hf" || provider === "huggingface-router") {
+      return Boolean(getHuggingFaceToken());
+    }
+    if (provider === "gemini") return Boolean(process.env.GEMINI_API_KEY);
+    if (provider === "lmstudio") return true;
+    return Boolean(process.env.HUGGING_FACE_API_KEY);
+  }
+
+  app.get("/health", (_req, res) => {
+    const provider = getActiveProvider();
+    res.json({
+      ok: true,
+      runtime: process.env.NODE_ENV === "production" ? "production" : "development",
+      provider,
+      aiConfigured: hasServerSideAiToken(provider),
+      model: provider.includes("huggingface") || provider === "hf" ? getHuggingFaceModels()[0] : process.env.LM_STUDIO_MODEL || null,
+    });
+  });
+
+  app.get("/api/provider-status", (_req, res) => {
+    const provider = getActiveProvider();
+    res.json({
+      provider,
+      aiConfigured: hasServerSideAiToken(provider),
+      model: provider.includes("huggingface") || provider === "hf" ? getHuggingFaceModels()[0] : process.env.LM_STUDIO_MODEL || null,
+      keyVisibleToBrowser: false,
+    });
+  });
 
   async function isSafeUrl(rawUrl: string): Promise<boolean> {
     try {
@@ -243,7 +277,14 @@ async function startServer() {
   // API to analyze resume using Hugging Face Thinking Model
   app.post("/api/analyze", async (req, res) => {
     const { resumeText, jobDescription } = req.body;
-    const provider = (process.env.AI_PROVIDER || process.env.LLM_PROVIDER || "huggingface").toLowerCase();
+    const provider = getActiveProvider();
+
+    if (!resumeText || !jobDescription || typeof resumeText !== "string" || typeof jobDescription !== "string") {
+      return res.status(400).json({
+        error: "INPUT_MISSING",
+        message: "Resume text and job description are required.",
+      });
+    }
 
     if (provider === "lmstudio") {
       try {

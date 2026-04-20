@@ -62,6 +62,8 @@ const isStaticPagesRuntime =
   typeof window !== 'undefined' &&
   window.location.hostname.endsWith('github.io');
 
+const LIVE_ANALYZER_URL = 'https://qyam23-pulse-cv.hf.space/';
+
 function isRTL(text: string): boolean {
   return /[\u0590-\u05FF\u0600-\u06FF]/.test(text);
 }
@@ -93,8 +95,8 @@ function buildStaticPreviewAnalysis(resumeText: string, jobDescription: string):
     weaknesses: missing.slice(0, 4),
     recommendations: missing.slice(0, 5).map((keyword) => rtl ? `חזקו בקורות החיים ראיה אמיתית ל-${keyword}` : `Add truthful evidence for ${keyword}`),
     profileSummary: rtl
-      ? 'זהו מצב תצוגה סטטי של GitHub Pages. הדוח מבצע בדיקת מילות מפתח בסיסית בדפדפן בלבד. לניתוח AI מלא עם Hugging Face, הרץ את האתר מקומית דרך run_site_huggingface.bat.'
-      : 'This is GitHub Pages static preview mode. The report runs a lightweight browser-only keyword check. For full AI analysis with Hugging Face, run the app locally with run_site_huggingface.bat.',
+      ? 'זהו מצב תצוגה סטטי של GitHub Pages. הדוח מבצע בדיקת מילות מפתח בסיסית בדפדפן בלבד. לניתוח AI מלא עם Hugging Face, פתחו את גרסת Hugging Face Space.'
+      : 'This is GitHub Pages static preview mode. The report runs a lightweight browser-only keyword check. For full AI analysis with Hugging Face, open the live Hugging Face Space.',
     tailoredBio: rtl
       ? 'תצוגת דמו: שפרו את קורות החיים סביב מילות המפתח החסרות, בלי להמציא ניסיון שלא קיים.'
       : 'Demo preview: strengthen the resume around missing role keywords without inventing experience.',
@@ -115,7 +117,7 @@ async function readApiError(response: Response): Promise<string> {
 
   const text = await response.text();
   if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
-    return "The AI backend is not available in this static site. Run the local backend with run_site_huggingface.bat, or use the static preview mode.";
+    return "The AI backend is not available in this static GitHub Pages preview. Open the live Hugging Face analyzer, or use the local backend.";
   }
 
   return text || "Analysis failed.";
@@ -253,7 +255,7 @@ export default function App() {
   const handleUrlFetch = async () => {
     if (!jobUrl) return;
     if (isStaticPagesRuntime) {
-      setError("GitHub Pages is static and cannot fetch job URLs. Paste the job description text manually, or run the local backend with run_site_huggingface.bat.");
+      setError("GitHub Pages is static and cannot fetch job URLs. Paste the job description text manually, or open the live Hugging Face analyzer.");
       return;
     }
     setIsFetchingUrl(true);
@@ -386,9 +388,14 @@ export default function App() {
         {isStaticPagesRuntime && (
           <div className="mb-8 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800 text-sm font-semibold flex flex-col md:flex-row md:items-center md:justify-between gap-3">
             <span>
-              Static GitHub Pages preview: AI backend calls are not available here. Paste text to see a browser-only preview, or run locally for full Hugging Face analysis.
+              Static GitHub Pages preview: AI backend calls are not available here. Paste text to see a browser-only preview, or open the live Hugging Face analyzer.
             </span>
-            <code className="bg-white/70 px-3 py-1 rounded-lg text-xs text-amber-900">run_site_huggingface.bat</code>
+            <a
+              href={LIVE_ANALYZER_URL}
+              className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2 text-xs font-black text-white shadow-sm transition hover:bg-amber-800"
+            >
+              Open live analyzer
+            </a>
           </div>
         )}
 
