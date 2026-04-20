@@ -57,8 +57,52 @@ interface AnalysisResult {
 
 type UpsellVariant = 'low' | 'medium' | 'high';
 
+const isStaticPagesRuntime =
+  typeof window !== 'undefined' &&
+  window.location.hostname.endsWith('github.io');
+
 function isRTL(text: string): boolean {
   return /[\u0590-\u05FF\u0600-\u06FF]/.test(text);
+}
+
+function buildStaticPreviewAnalysis(resumeText: string, jobDescription: string): AnalysisResult {
+  const normalize = (value: string) => value.toLowerCase();
+  const resume = normalize(resumeText);
+  const jdWords = Array.from(
+    new Set(
+      jobDescription
+        .split(/[\s,.;:()\/|\-]+/)
+        .map((word) => word.replace(/[^\w\u0590-\u05FF]/g, '').trim())
+        .filter((word) => word.length > 3)
+    )
+  ).slice(0, 40);
+
+  const found = jdWords.filter((word) => resume.includes(word.toLowerCase())).slice(0, 12);
+  const missing = jdWords.filter((word) => !resume.includes(word.toLowerCase())).slice(0, 12);
+  const score = Math.max(35, Math.min(82, Math.round((found.length / Math.max(jdWords.length, 1)) * 100 + 35)));
+  const rtl = isRTL(`${resumeText} ${jobDescription}`);
+
+  return {
+    matchScore: score,
+    atsVisibilityScore: Math.max(30, Math.min(85, score - 5)),
+    jobFitDecision: score >= 75 ? 'High' : score >= 55 ? 'Medium' : 'Low',
+    matchedKeywords: found,
+    missingKeywords: missing,
+    strengths: found.slice(0, 4),
+    weaknesses: missing.slice(0, 4),
+    recommendations: missing.slice(0, 5).map((keyword) => rtl ? `חזקו בקורות החיים ראיה אמיתית ל-${keyword}` : `Add truthful evidence for ${keyword}`),
+    profileSummary: rtl
+      ? 'זהו מצב תצוגה סטטי של GitHub Pages. הדוח מבצע בדיקת מילות מפתח בסיסית בדפדפן בלבד. לניתוח AI מלא עם Hugging Face, הרץ את האתר מקומית דרך run_site_huggingface.bat.'
+      : 'This is GitHub Pages static preview mode. The report runs a lightweight browser-only keyword check. For full AI analysis with Hugging Face, run the app locally with run_site_huggingface.bat.',
+    tailoredBio: rtl
+      ? 'תצוגת דמו: שפרו את קורות החיים סביב מילות המפתח החסרות, בלי להמציא ניסיון שלא קיים.'
+      : 'Demo preview: strengthen the resume around missing role keywords without inventing experience.',
+    bulletPointOptimization: missing.slice(0, 3).map((keyword) => ({
+      original: rtl ? `אין ראיה ברורה ל-${keyword}` : `No clear evidence for ${keyword}`,
+      optimized: rtl ? `אם זה נכון: הוסיפו הישג או פרויקט שמדגים ${keyword}` : `If accurate: add a project or achievement that demonstrates ${keyword}`,
+      rationale: rtl ? 'GitHub Pages אינו מפעיל backend. זהו ניסוח דמו בלבד.' : 'GitHub Pages does not run the backend. This is preview-only guidance.',
+    })),
+  };
 }
 
 export default function App() {
@@ -192,6 +236,10 @@ export default function App() {
 
   const handleUrlFetch = async () => {
     if (!jobUrl) return;
+    if (isStaticPagesRuntime) {
+      setError("GitHub Pages is static and cannot fetch job URLs. Paste the job description text manually, or run the local backend with run_site_huggingface.bat.");
+      return;
+    }
     setIsFetchingUrl(true);
     setError(null);
     try {
@@ -224,6 +272,14 @@ export default function App() {
     setResult(null);
     setShowUpsell(false);
     setExtractedKeywords(extractScanWords());
+
+    if (isStaticPagesRuntime) {
+      setTimeout(() => {
+        finishAnalysis(buildStaticPreviewAnalysis(resumeText, jobDescription));
+        setIsAnalyzing(false);
+      }, 900);
+      return;
+    }
 
     try {
       let response = await fetch('/api/analyze', {
@@ -307,6 +363,15 @@ export default function App() {
       </AnimatePresence>
 
       <main className="pt-28 pb-20 px-4 md:px-6 max-w-7xl mx-auto">
+        {isStaticPagesRuntime && (
+          <div className="mb-8 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800 text-sm font-semibold flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <span>
+              Static GitHub Pages preview: AI backend calls are not available here. Paste text to see a browser-only preview, or run locally for full Hugging Face analysis.
+            </span>
+            <code className="bg-white/70 px-3 py-1 rounded-lg text-xs text-amber-900">run_site_huggingface.bat</code>
+          </div>
+        )}
+
         {/* Header Section */}
         <section className="text-center mb-16 space-y-4">
           <motion.div 
