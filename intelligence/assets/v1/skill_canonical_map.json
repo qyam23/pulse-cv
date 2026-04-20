@@ -1,0 +1,11 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Alias-to-canonical skill lookup support." },
+  "js": "javascript", "javascript": "javascript", "typescript": "typescript", "ts": "typescript",
+  "reactjs": "react", "react.js": "react", "next.js": "nextjs", "node.js": "nodejs",
+  "postgres": "sql", "postgresql": "sql", "mysql": "sql", "sqlite": "sql",
+  "ml": "machine_learning", "analytics": "data_analysis", "powerbi": "power_bi",
+  "amazon web services": "aws", "google cloud": "gcp", "k8s": "kubernetes",
+  "ci/cd": "ci_cd", "github actions": "ci_cd", "iac": "terraform",
+  "scrum": "agile", "kanban": "agile", "roadmap": "product_strategy",
+  "program management": "project_management", "cross-functional": "stakeholder_management"
+}

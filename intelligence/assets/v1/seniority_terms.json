@@ -1,0 +1,7 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Seniority ladder and detection terms." },
+  "levels": ["intern", "junior", "mid", "senior", "staff", "principal", "lead", "manager", "director", "vp", "cto", "ceo"],
+  "junior_signals": ["junior", "jr.", "entry level", "entry-level", "associate", "graduate", "new grad"],
+  "mid_signals": ["mid-level", "mid level", "experienced", "professional"],
+  "senior_signals": ["senior", "sr.", "lead", "principal", "staff", "architect", "head of", "director", "manager"]
+}

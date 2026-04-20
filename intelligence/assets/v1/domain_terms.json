@@ -1,0 +1,9 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Domain keyword clusters." },
+  "frontend": ["react", "typescript", "javascript", "css", "html", "accessibility", "web performance"],
+  "backend": ["nodejs", "express", "api", "sql", "nosql", "authentication", "distributed systems"],
+  "data": ["python", "sql", "machine_learning", "data_analysis", "etl", "dashboards"],
+  "devops": ["aws", "azure", "gcp", "docker", "kubernetes", "ci_cd", "terraform"],
+  "product": ["roadmap", "stakeholders", "user research", "prioritization", "metrics"],
+  "management": ["leadership", "hiring", "mentoring", "delivery", "planning", "stakeholder_management"]
+}

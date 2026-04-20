@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+artifacts/
+server_test.log
+test_resume.txt
+test_jd.txt
+tmp_status.txt
+tmp_lms_status.txt
+tmp_model_id.txt
+pulse_site.log
+hf_site.out.log
+hf_site.err.log
+.sandbox/
+.env.sandbox

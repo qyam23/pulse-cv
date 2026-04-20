@@ -1,0 +1,9 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Expected keyword bundles by role profile." },
+  "software_engineer": { "core": ["algorithms", "data structures", "system design", "code review"], "common_stack": ["git", "ci/cd", "unit testing", "agile"], "red_flags_absent": ["version control", "debugging"] },
+  "frontend_engineer": { "core": ["react", "typescript", "accessibility", "performance"], "common_stack": ["html", "css", "testing", "design systems"], "red_flags_absent": ["responsive design", "browser debugging"] },
+  "backend_engineer": { "core": ["api", "databases", "authentication", "scalability"], "common_stack": ["nodejs", "sql", "logging", "testing"], "red_flags_absent": ["database design", "security"] },
+  "product_manager": { "core": ["roadmap", "stakeholders", "user research", "prioritization", "metrics"], "common_stack": ["jira", "confluence", "a/b testing", "analytics"], "red_flags_absent": ["product requirements", "user stories"] },
+  "data_scientist": { "core": ["statistics", "machine learning", "experimentation", "python"], "common_stack": ["sql", "notebooks", "dashboards", "model evaluation"], "red_flags_absent": ["data cleaning", "validation"] },
+  "engineering_manager": { "core": ["leadership", "mentoring", "delivery", "hiring", "technical strategy"], "common_stack": ["roadmaps", "stakeholders", "performance reviews"], "red_flags_absent": ["team leadership", "execution"] }
+}

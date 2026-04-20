@@ -1,0 +1,5 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Requirement language patterns." },
+  "required_patterns": ["\\brequired\\b", "\\bmust have\\b", "\\bmust-have\\b", "\\bessential\\b", "\\bmandatory\\b", "\\bminimum.*years\\b", "\\brequirements?\\b"],
+  "preferred_patterns": ["\\bpreferred\\b", "\\bnice to have\\b", "\\bnice-to-have\\b", "\\bbonus\\b", "\\bplus\\b", "\\bdesirable\\b", "\\badvantage\\b"]
+}

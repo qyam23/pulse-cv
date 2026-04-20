@@ -1,0 +1,6 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Patterns for extracting structured JD requirements." },
+  "years_of_experience": ["(\\d+)\\+?\\s+years?\\s+of\\s+(.*?)(?:experience|exp)", "minimum\\s+(\\d+)\\+?\\s+years?"],
+  "degree_requirement": ["bachelor'?s?", "master'?s?", "phd", "b\\.sc", "m\\.sc"],
+  "certification": ["certified", "certification", "certificate", "licensed"]
+}

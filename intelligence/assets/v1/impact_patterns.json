@@ -1,0 +1,5 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Strong and weak resume bullet impact patterns." },
+  "strong_patterns": ["increased.*by.*\\d+%", "reduced.*by.*\\d+%", "saved.*\\$", "grew.*from.*to", "launched.*product", "led.*team of \\d+", "delivered.*ahead of schedule", "improved.*\\d+%", "cut.*cost"],
+  "weak_patterns": ["^responsible for", "^worked on", "^helped with", "^assisted", "^supported", "^participated in"]
+}

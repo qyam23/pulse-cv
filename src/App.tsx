@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { 
   FileText, 
   Search, 
@@ -30,7 +30,6 @@ import {
   Globe
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI, Type } from "@google/genai";
 import * as pdfjs from 'pdfjs-dist';
 import mammoth from 'mammoth';
 
@@ -38,12 +37,11 @@ import mammoth from 'mammoth';
 // We use the .mjs version because modern pdfjs-dist often uses dynamic import()
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`;
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 interface AnalysisResult {
   matchScore: number;
   profileSummary: string;
   missingKeywords: string[];
+  matchedKeywords?: string[];
   strengths: string[];
   weaknesses: string[];
   recommendations: string[];
@@ -57,6 +55,12 @@ interface AnalysisResult {
   }[];
 }
 
+type UpsellVariant = 'low' | 'medium' | 'high';
+
+function isRTL(text: string): boolean {
+  return /[\u0590-\u05FF\u0600-\u06FF]/.test(text);
+}
+
 export default function App() {
   const [resumeText, setResumeText] = useState('');
   const [jobDescription, setJobDescription] = useState('');
@@ -67,9 +71,62 @@ export default function App() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showUpsell, setShowUpsell] = useState(false);
+  const [upsellVariant, setUpsellVariant] = useState<UpsellVariant>('medium');
+  const [copyBioLabel, setCopyBioLabel] = useState('Copy Optimized Bio');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [extractedKeywords, setExtractedKeywords] = useState<string[]>([]);
   const [currentScanWord, setCurrentScanWord] = useState('');
+  const inputRef = useRef<HTMLDivElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+
+  const scrollToInputs = useCallback(() => {
+    inputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  const revealUpsell = useCallback((analysis: AnalysisResult) => {
+    if (analysis.matchScore < 55) setUpsellVariant('low');
+    else if (analysis.matchScore < 80) setUpsellVariant('medium');
+    else setUpsellVariant('high');
+    setShowUpsell(true);
+  }, []);
+
+  const finishAnalysis = useCallback((analysis: AnalysisResult) => {
+    setResult(analysis);
+    revealUpsell(analysis);
+    setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }, [revealUpsell]);
+
+  const copyOptimizedBio = useCallback(async () => {
+    if (!result?.tailoredBio) return;
+    await navigator.clipboard.writeText(result.tailoredBio);
+    setCopyBioLabel('Copied ✓');
+    setTimeout(() => setCopyBioLabel('Copy Optimized Bio'), 2000);
+  }, [result]);
+
+  const presentKeywords = result?.matchedKeywords?.length
+    ? result.matchedKeywords
+    : extractedKeywords.filter((word) => !result?.missingKeywords?.some((missing) => missing.toLowerCase() === word.toLowerCase())).slice(0, 10);
+
+  const upsellCopy = {
+    low: {
+      className: 'bg-rose-600 border-rose-400/30 shadow-[0_20px_50px_rgba(225,29,72,0.24)]',
+      headline: 'Your resume needs a serious positioning reset.',
+      subtext: 'The match score is low. A professional rebuild can help you close the gaps without inventing experience.',
+      cta: 'Get Expert Resume Help',
+    },
+    medium: {
+      className: 'bg-indigo-600 border-indigo-400/30 shadow-[0_20px_50px_rgba(79,70,229,0.3)]',
+      headline: "You're close. Let's get you over the line.",
+      subtext: 'The profile has usable signals, but the language needs sharper ATS alignment and stronger recruiter search coverage.',
+      cta: 'Upgrade My Resume',
+    },
+    high: {
+      className: 'bg-emerald-600 border-emerald-400/30 shadow-[0_20px_50px_rgba(5,150,105,0.24)]',
+      headline: 'Strong match. Prepare to convert the interview.',
+      subtext: 'Your resume is competitive for this role. Now focus on interview positioning, proof stories, and role-specific answers.',
+      cta: 'Build Interview Plan',
+    },
+  }[upsellVariant];
 
   // Extract interesting keywords for the scanning animation
   const extractScanWords = useCallback(() => {
@@ -165,6 +222,7 @@ export default function App() {
     setIsAnalyzing(true);
     setError(null);
     setResult(null);
+    setShowUpsell(false);
     setExtractedKeywords(extractScanWords());
 
     try {
@@ -177,53 +235,15 @@ export default function App() {
       if (!response.ok) {
         const errorData = await response.json();
         
-        // If HF Key is missing, fallback to Gemini directly from frontend
-        if (errorData.error === "HF_KEY_MISSING") {
-          console.log("Hugging Face key missing, falling back to Gemini...");
-          const prompt = `
-            Analyze Resume vs Job Description. Provide deep analysis in JSON.
-            LANGUAGE: Detect and respond in the same language as the Resume.
-            RESUME: ${resumeText}
-            JD: ${jobDescription}
-          `;
-          
-          const result = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  matchScore: { type: Type.NUMBER },
-                  profileSummary: { type: Type.STRING },
-                  missingKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  atsVisibilityScore: { type: Type.NUMBER },
-                  jobFitDecision: { type: Type.STRING },
-                  tailoredBio: { type: Type.STRING },
-                  bulletPointOptimization: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        original: { type: Type.STRING },
-                        optimized: { type: Type.STRING },
-                        rationale: { type: Type.STRING }
-                      }
-                    }
-                  }
-                }
-              }
-            }
+        // If HF key is missing, fallback to Gemini through the backend only.
+        if (["HF_KEY_MISSING", "HF_TOKEN_MISSING"].includes(errorData.error)) {
+          response = await fetch('/api/analyze-gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resumeText, jobDescription }),
           });
-          
-          if (result.text) {
-            setResult(JSON.parse(result.text));
-            window.scrollTo({ top: 400, behavior: 'smooth' });
-            setTimeout(() => setShowUpsell(true), 2000);
+          if (response.ok) {
+            finishAnalysis(await response.json());
             return;
           }
         }
@@ -231,16 +251,14 @@ export default function App() {
       }
 
       const data = await response.json();
-      setResult(data);
-      window.scrollTo({ top: 400, behavior: 'smooth' });
-      setTimeout(() => setShowUpsell(true), 2000);
+      finishAnalysis(data);
     } catch (err: any) {
       console.error("Analysis Error:", err);
       setError(err.message || "AI analysis failed. Please check your API key configuration.");
     } finally {
       setIsAnalyzing(false);
     }
-  }, [resumeText, jobDescription]);
+  }, [resumeText, jobDescription, extractScanWords, finishAnalysis]);
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] selection:bg-indigo-100 selection:text-indigo-900">
@@ -255,10 +273,10 @@ export default function App() {
           </div>
           
           <div className="hidden md:flex items-center gap-8 text-sm font-semibold text-slate-500">
-            <a href="#" className="hover:text-indigo-600 transition-colors">Analyzer</a>
-            <a href="#" className="hover:text-indigo-600 transition-colors">Pricing</a>
-            <a href="#" className="hover:text-indigo-600 transition-colors">Success Stories</a>
-            <button className="bg-slate-900 text-white px-6 py-2.5 rounded-full hover:bg-slate-800 transition-all active:scale-95 shadow-lg shadow-slate-200">
+            <button onClick={scrollToInputs} className="hover:text-indigo-600 transition-colors">Analyzer</button>
+            <a href="https://pulsecv.com/templates" target="_blank" rel="noopener noreferrer" className="hover:text-indigo-600 transition-colors">Templates</a>
+            <a href="https://pulsecv.com/coaching" target="_blank" rel="noopener noreferrer" className="hover:text-indigo-600 transition-colors">Coaching</a>
+            <button onClick={scrollToInputs} className="bg-slate-900 text-white px-6 py-2.5 rounded-full hover:bg-slate-800 transition-all active:scale-95 shadow-lg shadow-slate-200">
               Get Started
             </button>
           </div>
@@ -279,11 +297,11 @@ export default function App() {
             className="fixed inset-0 top-[72px] bg-white z-[90] md:hidden p-6 space-y-6"
           >
             <div className="flex flex-col gap-6 text-lg font-bold">
-              <a href="#">Analysis Engine</a>
-              <a href="#">Resume Templates</a>
-              <a href="#">Executive Coaching</a>
+              <button className="text-left" onClick={() => { setIsMenuOpen(false); scrollToInputs(); }}>Analysis Engine</button>
+              <a href="https://pulsecv.com/templates" target="_blank" rel="noopener noreferrer" onClick={() => setIsMenuOpen(false)}>Resume Templates</a>
+              <a href="https://pulsecv.com/coaching" target="_blank" rel="noopener noreferrer" onClick={() => setIsMenuOpen(false)}>Executive Coaching</a>
             </div>
-            <button className="w-full bg-indigo-600 text-white py-4 rounded-2xl">Sign Up Free</button>
+            <button onClick={() => { setIsMenuOpen(false); scrollToInputs(); }} className="w-full bg-indigo-600 text-white py-4 rounded-2xl">Sign Up Free</button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -314,7 +332,7 @@ export default function App() {
         </section>
 
         {/* Input Area */}
-        <div className="grid lg:grid-cols-2 gap-8 mb-16 px-2 md:px-0">
+        <div ref={inputRef} className="grid lg:grid-cols-2 gap-8 mb-16 px-2 md:px-0 scroll-mt-28">
           <div className="space-y-6">
             <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden group focus-within:ring-4 ring-indigo-50 transition-all">
               <div className="bg-slate-50/50 px-6 py-4 flex items-center justify-between border-b border-slate-200">
@@ -336,6 +354,15 @@ export default function App() {
                 placeholder="Paste your professional history or drop a file above..."
                 className="w-full h-80 p-8 focus:outline-none text-slate-600 leading-relaxed text-base resize-none"
               />
+              {isReadingFile && (
+                <div className="flex items-center gap-3 text-indigo-600 text-sm font-semibold px-8 pb-4">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Reading file...
+                </div>
+              )}
+              <div className="text-right text-xs text-slate-400 px-6 pb-3">
+                {resumeText.length.toLocaleString()} characters
+              </div>
             </div>
           </div>
 
@@ -371,6 +398,9 @@ export default function App() {
                 placeholder="Paste the target job requirements or use the URL tool..."
                 className="w-full h-80 p-8 focus:outline-none text-slate-600 leading-relaxed text-base resize-none"
               />
+              <div className="text-right text-xs text-slate-400 px-6 pb-3">
+                {jobDescription.length.toLocaleString()} characters
+              </div>
             </div>
           </div>
         </div>
@@ -412,9 +442,10 @@ export default function App() {
         <AnimatePresence>
           {result && (
             <motion.div 
+              ref={resultsRef}
               initial={{ opacity: 0, y: 50 }}
               animate={{ opacity: 1, y: 0 }}
-              className="space-y-12"
+              className="space-y-12 scroll-mt-28"
             >
               {/* Score Bento */}
               <div className="grid md:grid-cols-3 gap-6">
@@ -427,9 +458,6 @@ export default function App() {
                       <div className="flex flex-wrap gap-3">
                          <div className="bg-white/10 backdrop-blur-md px-4 py-2 rounded-xl text-xs font-bold border border-white/10">
                            ATS Visibility: {result.atsVisibilityScore}/100
-                         </div>
-                         <div className="bg-emerald-500/20 backdrop-blur-md px-4 py-2 rounded-xl text-xs font-bold border border-emerald-500/30 text-emerald-300">
-                           Confidence: 98.2%
                          </div>
                       </div>
                     </div>
@@ -464,7 +492,7 @@ export default function App() {
                          <Terminal className="w-6 h-6 text-indigo-500" />
                          <h3 className="text-xl font-extrabold tracking-tight">{result.profileSummary.match(/[\u0590-\u05FF]/) ? 'סיכום מנהלים' : 'Executive Summary'}</h3>
                        </div>
-                       <p className={`text-slate-600 leading-relaxed font-medium ${result.profileSummary.match(/[\u0590-\u05FF]/) ? 'text-right dir-rtl' : ''}`}>
+                       <p dir={isRTL(result.profileSummary) ? 'rtl' : 'ltr'} className={`text-slate-600 leading-relaxed font-medium ${isRTL(result.profileSummary) ? 'text-right' : ''}`}>
                          {result.profileSummary}
                        </p>
                     </div>
@@ -474,12 +502,28 @@ export default function App() {
                          <Zap className="w-6 h-6 text-amber-500" />
                          <h3 className="text-xl font-extrabold tracking-tight">Critical Gaps</h3>
                        </div>
-                       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                         {result.missingKeywords?.map((kw, i) => (
-                           <div key={i} className="bg-rose-50 border border-rose-100 text-rose-700 px-3 py-2 rounded-xl text-xs font-bold text-center">
-                             {kw}
+                       <div className="space-y-3">
+                         <h4 className="text-xs font-black uppercase text-slate-400 tracking-widest">Keyword Coverage</h4>
+                         <div className="grid grid-cols-2 gap-5">
+                           <div>
+                             <span className="text-[10px] font-bold text-emerald-600 uppercase">Found in Resume</span>
+                             {presentKeywords.slice(0, 10).map((kw, i) => (
+                               <div key={`${kw}-${i}`} className="flex items-center gap-2 text-xs py-1">
+                                 <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                                 <span className="text-slate-600 font-medium">{kw}</span>
+                               </div>
+                             ))}
                            </div>
-                         ))}
+                           <div>
+                             <span className="text-[10px] font-bold text-rose-600 uppercase">Missing</span>
+                             {result.missingKeywords?.map((kw, i) => (
+                               <div key={`${kw}-${i}`} className="flex items-center gap-2 text-xs py-1">
+                                 <span className="w-2 h-2 rounded-full bg-rose-400 shrink-0" />
+                                 <span className="text-slate-600 font-medium">{kw}</span>
+                               </div>
+                             ))}
+                           </div>
+                         </div>
                        </div>
                     </div>
                  </div>
@@ -491,11 +535,11 @@ export default function App() {
                          <Crown className="w-8 h-8 text-amber-400" />
                          <h3 className="text-2xl font-black tracking-tight">AI Tailored Bio</h3>
                        </div>
-                       <p className="text-lg font-medium leading-relaxed italic text-indigo-50 mb-8 grow">
+                       <p dir={isRTL(result.tailoredBio) ? 'rtl' : 'ltr'} className={`text-lg font-medium leading-relaxed italic text-indigo-50 mb-8 grow ${isRTL(result.tailoredBio) ? 'text-right' : ''}`}>
                          "{result.tailoredBio}"
                        </p>
-                       <button className="flex items-center justify-center gap-2 bg-white text-indigo-600 py-4 rounded-2xl font-bold uppercase text-xs tracking-widest hover:bg-indigo-50 transition-all shadow-xl shadow-indigo-800/20 active:scale-95">
-                         Copy Optimized Bio
+                       <button onClick={copyOptimizedBio} className="flex items-center justify-center gap-2 bg-white text-indigo-600 py-4 rounded-2xl font-bold uppercase text-xs tracking-widest hover:bg-indigo-50 transition-all shadow-xl shadow-indigo-800/20 active:scale-95">
+                         {copyBioLabel}
                          <MousePointer2 className="w-4 h-4" />
                        </button>
                     </div>
@@ -547,24 +591,24 @@ export default function App() {
                 <motion.div 
                   initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  className="bg-indigo-600 rounded-[3rem] p-10 md:p-16 text-center text-white space-y-8 shadow-[0_20px_50px_rgba(79,70,229,0.3)] border border-indigo-400/30 overflow-hidden relative"
+                  className={`${upsellCopy.className} rounded-[3rem] p-10 md:p-16 text-center text-white space-y-8 border overflow-hidden relative`}
                 >
                   <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-white/10 to-transparent pointer-events-none" />
                   <div className="relative z-10 max-w-2xl mx-auto space-y-6">
                     <div className="w-20 h-20 bg-amber-400 rounded-[2rem] flex items-center justify-center mx-auto shadow-2xl shadow-amber-500/50 mb-4 animate-bounce">
                       <Crown className="w-10 h-10 text-slate-900" />
                     </div>
-                    <h2 className="text-3xl md:text-5xl font-black tracking-tight">Ready to Secure the Job?</h2>
+                    <h2 className="text-3xl md:text-5xl font-black tracking-tight">{upsellCopy.headline}</h2>
                     <p className="text-indigo-100 text-lg md:text-xl font-medium leading-relaxed">
-                      Our Elite Resume Architects have helped thousands land roles at Google, Stripe, and Apple. Get a full human manual audit and a bespoke redesign.
+                      {upsellCopy.subtext}
                     </p>
                     <div className="flex flex-col md:flex-row justify-center gap-4 pt-4">
-                      <button className="bg-white text-indigo-600 px-10 py-5 rounded-2xl font-bold uppercase tracking-widest text-sm hover:bg-slate-50 transition-all shadow-2xl active:scale-95">
-                         Go Premium & Land the Offer
-                      </button>
-                      <button className="bg-indigo-700/50 backdrop-blur-md text-white border border-indigo-400 px-10 py-5 rounded-2xl font-bold uppercase tracking-widest text-sm hover:bg-indigo-700 transition-all active:scale-95">
+                      <a href="https://pulsecv.com/get-started" target="_blank" rel="noopener noreferrer" className="bg-white text-indigo-600 px-10 py-5 rounded-2xl font-bold uppercase tracking-widest text-sm hover:bg-slate-50 transition-all shadow-2xl active:scale-95">
+                         {upsellCopy.cta}
+                      </a>
+                      <a href="https://pulsecv.com/templates" target="_blank" rel="noopener noreferrer" className="bg-indigo-700/50 backdrop-blur-md text-white border border-indigo-400 px-10 py-5 rounded-2xl font-bold uppercase tracking-widest text-sm hover:bg-indigo-700 transition-all active:scale-95">
                          Preview Pro Designs
-                      </button>
+                      </a>
                     </div>
                     <div className="pt-8 flex items-center justify-center gap-8 opacity-60 grayscale brightness-200 text-[10px] font-black uppercase tracking-widest">
                       <span>Trusted by 20,000+ Pros</span>
@@ -599,24 +643,24 @@ export default function App() {
                 <div className="space-y-4">
                    <h4 className="font-bold text-slate-800 text-sm">Product</h4>
                    <div className="flex flex-col gap-2 text-slate-500 text-sm font-semibold">
-                      <a href="#" className="hover:text-indigo-600">ATS Analyzer</a>
-                      <a href="#" className="hover:text-indigo-600">Salary Estimator</a>
-                      <a href="#" className="hover:text-indigo-600">JD Scraper</a>
+                      <button type="button" onClick={scrollToInputs} className="text-left hover:text-indigo-600">ATS Analyzer</button>
+                      <a href="https://pulsecv.com/salary-estimator" target="_blank" rel="noreferrer" className="hover:text-indigo-600">Salary Estimator</a>
+                      <button type="button" onClick={scrollToInputs} className="text-left hover:text-indigo-600">JD Scraper</button>
                    </div>
                 </div>
                 <div className="space-y-4">
                    <h4 className="font-bold text-slate-800 text-sm">Company</h4>
                    <div className="flex flex-col gap-2 text-slate-500 text-sm font-semibold">
-                      <a href="#" className="hover:text-indigo-600">Privacy</a>
-                      <a href="#" className="hover:text-indigo-600">Terms</a>
-                      <a href="#" className="hover:text-indigo-600">Security</a>
+                      <a href="https://pulsecv.com/privacy" target="_blank" rel="noreferrer" className="hover:text-indigo-600">Privacy</a>
+                      <a href="https://pulsecv.com/terms" target="_blank" rel="noreferrer" className="hover:text-indigo-600">Terms</a>
+                      <a href="https://pulsecv.com/security" target="_blank" rel="noreferrer" className="hover:text-indigo-600">Security</a>
                    </div>
                 </div>
                 <div className="space-y-4">
                    <h4 className="font-bold text-slate-800 text-sm">Follow</h4>
                    <div className="flex flex-col gap-2 text-slate-500 text-sm font-semibold">
-                      <a href="#" className="hover:text-indigo-600">LinkedIn</a>
-                      <a href="#" className="hover:text-indigo-600">X (Twitter)</a>
+                      <a href="https://www.linkedin.com/company/pulsecv" target="_blank" rel="noreferrer" className="hover:text-indigo-600">LinkedIn</a>
+                      <a href="https://x.com/pulsecv" target="_blank" rel="noreferrer" className="hover:text-indigo-600">X (Twitter)</a>
                    </div>
                 </div>
              </div>

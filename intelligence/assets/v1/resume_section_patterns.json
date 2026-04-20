@@ -1,0 +1,8 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Regex section patterns for raw resume text." },
+  "summary": ["^professional\\s+summary$", "^profile$", "^about$"],
+  "experience": ["^(work\\s+)?experience$", "^employment\\s+history$", "^professional\\s+background$"],
+  "education": ["^education$", "^academic\\s+background$", "^qualifications$"],
+  "skills": ["^(technical\\s+)?skills$", "^core\\s+competencies$", "^technologies$"],
+  "projects": ["^projects$", "^portfolio$", "^open\\s+source$"]
+}

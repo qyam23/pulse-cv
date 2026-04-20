@@ -1,0 +1,9 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Broader title families for prompt context." },
+  "engineering": ["software_engineer", "frontend_engineer", "backend_engineer", "fullstack_engineer", "devops_engineer", "platform_engineer", "qa_engineer"],
+  "data": ["data_scientist", "data_analyst", "ml_engineer", "data_engineer"],
+  "product": ["product_manager", "technical_product_manager", "product_analyst"],
+  "management": ["engineering_manager", "project_manager", "program_manager", "operations_manager"],
+  "design": ["ux_designer"],
+  "commercial": ["sales_manager", "marketing_manager"]
+}

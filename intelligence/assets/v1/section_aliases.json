@@ -1,0 +1,10 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Resume section heading aliases." },
+  "summary": ["summary", "professional summary", "profile", "about", "career profile", "תקציר", "פרופיל"],
+  "experience": ["experience", "work experience", "professional experience", "employment history", "career history", "work history", "relevant experience", "ניסיון", "נסיון"],
+  "education": ["education", "academic background", "qualifications", "degrees", "השכלה"],
+  "skills": ["skills", "technical skills", "core competencies", "technologies", "tools", "stack", "כישורים", "מיומנויות"],
+  "projects": ["projects", "personal projects", "side projects", "portfolio", "open source", "פרויקטים"],
+  "certifications": ["certifications", "certificates", "licenses", "הסמכות"],
+  "languages": ["languages", "language skills", "שפות"]
+}

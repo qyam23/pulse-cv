@@ -1,0 +1,23 @@
+{
+  "_meta": { "version": "1.0.0", "generated": "2026-04-20", "source": "manual_seed", "description": "Canonical job title aliases for role detection." },
+  "software_engineer": ["software engineer", "swe", "software developer", "software dev", "programmer"],
+  "frontend_engineer": ["frontend engineer", "front end developer", "ui engineer", "react developer"],
+  "backend_engineer": ["backend engineer", "back end developer", "server-side engineer", "api developer"],
+  "fullstack_engineer": ["fullstack engineer", "full stack developer", "full-stack engineer"],
+  "devops_engineer": ["devops engineer", "sre", "site reliability engineer", "cloud engineer"],
+  "platform_engineer": ["platform engineer", "infrastructure engineer"],
+  "data_scientist": ["data scientist", "ds", "data science engineer"],
+  "ml_engineer": ["ml engineer", "machine learning engineer", "ai engineer"],
+  "data_engineer": ["data engineer", "etl engineer", "analytics engineer"],
+  "data_analyst": ["data analyst", "business analyst", "bi analyst"],
+  "product_manager": ["product manager", "product lead", "head of product"],
+  "technical_product_manager": ["technical product manager", "platform pm", "api product manager"],
+  "project_manager": ["project manager", "delivery manager", "program coordinator"],
+  "program_manager": ["program manager", "technical program manager", "tpm"],
+  "engineering_manager": ["engineering manager", "software manager", "development manager"],
+  "qa_engineer": ["qa engineer", "test engineer", "automation tester"],
+  "ux_designer": ["ux designer", "product designer", "ui ux designer"],
+  "sales_manager": ["sales manager", "account executive", "business development manager"],
+  "marketing_manager": ["marketing manager", "growth manager", "performance marketer"],
+  "operations_manager": ["operations manager", "ops manager", "business operations manager"]
+}
