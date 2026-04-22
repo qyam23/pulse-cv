@@ -62,6 +62,32 @@ async function startServer() {
     "job", "role", "work", "team", "site", "company", "required", "requirements", "experience", "skills", "ability",
     "של", "על", "עם", "או", "את", "זה", "זו", "הוא", "היא", "אנחנו", "אתה", "אתם", "תפקיד", "עבודה", "דרישות", "ניסיון",
   ]);
+  const NOISE_KEYWORDS = new Set([
+    "linkedin", "sign", "join", "policy", "cookie", "cookies", "dialog", "clear", "app", "guest", "controls",
+    "guidelines", "community", "privacy", "agreement", "copyright", "brand", "show", "more", "less", "skip", "user", "users", "now",
+    "content", "main", "feed", "password", "forgot", "terms", "accessibility", "through", "having",
+  ]);
+  const JOB_PAGE_BOILERPLATE_PATTERNS = [
+    /sign in/i,
+    /join now/i,
+    /skip to main content/i,
+    /by clicking continue/i,
+    /cookie policy/i,
+    /privacy policy/i,
+    /user agreement/i,
+    /guest controls/i,
+    /community guidelines/i,
+    /new to linkedin/i,
+    /forgot password/i,
+    /show more/i,
+    /show less/i,
+    /see who you know/i,
+    /get notified about new/i,
+    /referrals increase your chances/i,
+    /by clicking continue to join or sign in/i,
+    /linkedin and 1 more/i,
+    /linkedin\s*$/i,
+  ];
 
   function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
@@ -81,8 +107,8 @@ async function startServer() {
   function tokenize(value: string): string[] {
     const matches = normalizedForCache(value).match(/[a-z0-9+#.]{3,}|[\u0590-\u05FF]{2,}/g) || [];
     return matches
-      .map((token) => token.replace(/^[^a-z0-9\u0590-\u05FF+#.]+|[^a-z0-9\u0590-\u05FF+#.]+$/g, ""))
-      .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+      .map((token) => token.replace(/^[^a-z0-9\u0590-\u05FF+#]+|[^a-z0-9\u0590-\u05FF+#]+$/g, ""))
+      .filter((token) => token.length >= 2 && !STOPWORDS.has(token) && !NOISE_KEYWORDS.has(token));
   }
 
   function uniqueOrdered(values: string[]): string[] {
@@ -105,6 +131,24 @@ async function startServer() {
       .map((token) => ({ token, count: counts.get(token) || 0 }))
       .sort((a, b) => b.count - a.count || a.token.localeCompare(b.token, "he"));
     return ranked.slice(0, 28).map((entry) => entry.token);
+  }
+
+  function cleanScrapedJobText(rawText: string, sourceUrl: string): string {
+    const isLinkedIn = /linkedin\.com/i.test(sourceUrl);
+    const lines = rawText
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+
+    const filtered = lines.filter((line) => {
+      if (line.length < 2) return false;
+      if (JOB_PAGE_BOILERPLATE_PATTERNS.some((pattern) => pattern.test(line))) return false;
+      if (isLinkedIn && /^(linkedin|join|sign|policy|privacy|cookie|cookies)$/i.test(line)) return false;
+      return true;
+    });
+
+    const deduped = uniqueOrdered(filtered);
+    return deduped.join("\n").slice(0, 30000).trim();
   }
 
   function buildDeterministicAnalysis(resumeText: string, jobDescription: string) {
@@ -389,9 +433,27 @@ async function startServer() {
         return res.status(400).json({ error: "Redirected URL is not allowed." });
       }
       const $ = cheerio.load(response.data);
-      
-      // Basic text extraction from common job board containers
-      const text = $('body').text().replace(/\s\s+/g, ' ').trim().slice(0, 50000);
+
+      $("script, style, noscript, header, footer, nav, form").remove();
+
+      const candidateSelectors = [
+        "main",
+        "article",
+        "[data-test-id='job-details']",
+        ".jobs-description",
+        ".show-more-less-html__markup",
+        ".description__text",
+        ".jobs-box__html-content",
+        "body",
+      ];
+
+      let rawText = "";
+      for (const selector of candidateSelectors) {
+        const selected = $(selector).text().replace(/\t+/g, " ").replace(/\u00a0/g, " ").trim();
+        if (selected.length > rawText.length) rawText = selected;
+      }
+
+      const text = cleanScrapedJobText(rawText, url);
       res.json({ text });
     } catch (error) {
       console.error("Scraping error:", error);
