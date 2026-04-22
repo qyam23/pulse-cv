@@ -159,6 +159,27 @@ async function startServer() {
     /^our total rewards/i,
     /^our mission is/i,
   ];
+  const LINKEDIN_JOB_TITLE_SELECTORS = [
+    ".topcard__title",
+    ".job-details-jobs-unified-top-card__job-title h1",
+    ".job-details-jobs-unified-top-card__job-title",
+    "h1",
+  ];
+  const LINKEDIN_JOB_COMPANY_SELECTORS = [
+    ".topcard__org-name-link",
+    ".job-details-jobs-unified-top-card__company-name a",
+    ".job-details-jobs-unified-top-card__company-name",
+  ];
+  const LINKEDIN_JOB_LOCATION_SELECTORS = [
+    ".topcard__flavor--bullet",
+    ".job-details-jobs-unified-top-card__primary-description-container",
+  ];
+  const LINKEDIN_JOB_DESCRIPTION_SELECTORS = [
+    ".description__text .show-more-less-html__markup",
+    ".description__text--rich .show-more-less-html__markup",
+    ".show-more-less-html__markup",
+    ".description__text",
+  ];
 
   function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
@@ -199,6 +220,57 @@ async function startServer() {
       }
     }
     return output;
+  }
+
+  function queryFirstText($: cheerio.CheerioAPI, selectors: string[]): string {
+    for (const selector of selectors) {
+      const text = $(selector).first().text().replace(/\s+/g, " ").trim();
+      if (text) return text;
+    }
+    return "";
+  }
+
+  function htmlFragmentToText(html: string): string {
+    const $ = cheerio.load(`<div id="root">${html}</div>`);
+    $("#root br").replaceWith("\n");
+    $("#root li").each((_, el) => {
+      $(el).prepend("• ");
+      $(el).append("\n");
+    });
+    $("#root p, #root h1, #root h2, #root h3, #root h4, #root h5, #root h6, #root div, #root section, #root ul").each((_, el) => {
+      $(el).append("\n");
+    });
+    return $("#root")
+      .text()
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function cleanLinkedInJobDescriptionText(text: string): string {
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const output: string[] = [];
+    for (const line of lines) {
+      if (
+        /^additional information/i.test(line) ||
+        /equal opportunity employer/i.test(line) ||
+        /^we expect all employees/i.test(line) ||
+        /^our total rewards/i.test(line) ||
+        /^the job is open to/i.test(line) ||
+        /^relocation assistance provided/i.test(line) ||
+        /is a leading global .* innovator/i.test(line)
+      ) {
+        break;
+      }
+      output.push(line);
+    }
+
+    return output.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
   }
 
   function extractDeterministicKeywords(jobDescription: string): string[] {
@@ -310,6 +382,32 @@ async function startServer() {
     return trimmed || cleanScrapedJobText(rawText, "https://www.linkedin.com/jobs/view/");
   }
 
+  function extractLinkedInJobFromHtml($: cheerio.CheerioAPI) {
+    const title = queryFirstText($, LINKEDIN_JOB_TITLE_SELECTORS);
+    const company = queryFirstText($, LINKEDIN_JOB_COMPANY_SELECTORS);
+    const location = queryFirstText($, LINKEDIN_JOB_LOCATION_SELECTORS);
+
+    let descriptionHtml = "";
+    for (const selector of LINKEDIN_JOB_DESCRIPTION_SELECTORS) {
+      const html = $(selector).first().html();
+      if (html && html.trim()) {
+        descriptionHtml = html;
+        break;
+      }
+    }
+
+    const description = descriptionHtml ? cleanLinkedInJobDescriptionText(htmlFragmentToText(descriptionHtml)) : "";
+    const pieces = [title, company, location, description].filter(Boolean);
+    const structured = uniqueOrdered(pieces).join("\n\n").trim();
+    return {
+      title,
+      company,
+      location,
+      description,
+      structured,
+    };
+  }
+
   function buildDeterministicAnalysis(resumeText: string, jobDescription: string) {
     const resumeTokens = new Set(tokenize(resumeText));
     const jdKeywords = extractDeterministicKeywords(jobDescription);
@@ -417,6 +515,66 @@ async function startServer() {
     cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
     if (cleaned.includes("</think>")) cleaned = cleaned.split("</think>").pop()?.trim() || "";
     return cleaned.replace(/```json/g, "").replace(/```/g, "").trim();
+  }
+
+  async function refineScrapedJobTextWithAi(sourceUrl: string, rawText: string) {
+    const token = getHuggingFaceToken();
+    if (!token) return null;
+
+    const prompt = [
+      "You extract the real job description from noisy scraped web text.",
+      "Return only valid JSON with this exact schema:",
+      '{"title":"","company":"","location":"","job_description":""}',
+      "Rules:",
+      "- Keep only the real job posting.",
+      "- Remove LinkedIn chrome, recruiter names, followers, similar jobs, people also viewed, sign-in prompts, footer, marketing, company boilerplate, and unrelated numbers.",
+      "- Preserve the original language.",
+      "- job_description must contain only the actual role description, responsibilities, requirements, and relevant benefits if they belong to the posting.",
+      "- If title/company/location are visible, extract them.",
+      `URL: ${sourceUrl}`,
+      "TEXT:",
+      rawText.slice(0, 12000),
+    ].join("\n");
+
+    for (const model of getHuggingFaceModels()) {
+      try {
+        const response = await axios.post(
+          "https://router.huggingface.co/v1/chat/completions",
+          {
+            model,
+            messages: [
+              { role: "system", content: "Return JSON only. Do not explain." },
+              { role: "user", content: prompt },
+            ],
+            temperature: 0,
+            max_tokens: 1200,
+            stream: false,
+            response_format: { type: "json_object" },
+          },
+          {
+            timeout: 45000,
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+
+        const parsed = parseAnalysisJson(extractProviderText(response.data));
+        const title = typeof parsed?.title === "string" ? parsed.title.trim() : "";
+        const company = typeof parsed?.company === "string" ? parsed.company.trim() : "";
+        const location = typeof parsed?.location === "string" ? parsed.location.trim() : "";
+        const jobDescription = typeof parsed?.job_description === "string" ? parsed.job_description.trim() : "";
+        const merged = [title, company, location, jobDescription].filter(Boolean).join("\n\n").trim();
+        if (jobDescription.length > 120) {
+          return merged;
+        }
+      } catch (error: any) {
+        console.warn("AI JD refinement failed", model, error.response?.data || error.message);
+      }
+    }
+
+    return null;
   }
 
   function buildPrompt(resumeText: string, jobDescription: string): string {
@@ -600,6 +758,8 @@ async function startServer() {
         "article",
         "[data-test-id='job-details']",
         ".jobs-description",
+        ".description__text .show-more-less-html__markup",
+        ".description__text--rich .show-more-less-html__markup",
         ".show-more-less-html__markup",
         ".description__text",
         ".jobs-box__html-content",
@@ -612,11 +772,18 @@ async function startServer() {
         if (selected.length > rawText.length) rawText = selected;
       }
 
-      const text = /linkedin\.com\/(?:posts|feed\/update|activity)/i.test(url)
-        ? extractLinkedInPostBody(rawText)
-        : /linkedin\.com\/jobs\/view/i.test(url)
-          ? extractLinkedInJobBody(rawText)
-          : cleanScrapedJobText(rawText, url);
+      let text = "";
+      if (/linkedin\.com\/(?:posts|feed\/update|activity)/i.test(url)) {
+        text = extractLinkedInPostBody(rawText);
+      } else if (/linkedin\.com\/jobs\/view/i.test(url)) {
+        const structured = extractLinkedInJobFromHtml($);
+        text = structured.structured || extractLinkedInJobBody(rawText);
+        const aiRefined = await refineScrapedJobTextWithAi(url, text);
+        if (aiRefined) text = aiRefined;
+      } else {
+        text = cleanScrapedJobText(rawText, url);
+      }
+
       res.json({ text });
     } catch (error) {
       console.error("Scraping error:", error);
