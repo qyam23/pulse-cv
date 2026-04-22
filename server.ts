@@ -61,11 +61,14 @@ async function startServer() {
     "and", "the", "for", "with", "you", "your", "are", "our", "this", "that", "will", "from", "have", "has", "was", "were",
     "job", "role", "work", "team", "site", "company", "required", "requirements", "experience", "skills", "ability",
     "של", "על", "עם", "או", "את", "זה", "זו", "הוא", "היא", "אנחנו", "אתה", "אתם", "תפקיד", "עבודה", "דרישות", "ניסיון",
+    "דרוש", "דרושה", "דרושים", "משרה", "חובה", "יתרון", "איזור", "אזור", "צפון", "דרום", "מרכז", "קורות", "חיים", "למייל", "ישירות", "לשלוח", "נא", "ועוד",
+    "המשרה", "הצפון", "באיזור", "למפעל", "במפעל", "בתחומו", "ואחריות", "כולל", "מוביל", "יצרני", "מחלקת", "ית", "מלאה",
   ]);
   const NOISE_KEYWORDS = new Set([
     "linkedin", "sign", "join", "policy", "cookie", "cookies", "dialog", "clear", "app", "guest", "controls",
     "guidelines", "community", "privacy", "agreement", "copyright", "brand", "show", "more", "less", "skip", "user", "users", "now",
     "content", "main", "feed", "password", "forgot", "terms", "accessibility", "through", "having",
+    "post", "followers", "head", "hunter", "profile", "connect", "copy", "comment", "share",
   ]);
   const JOB_PAGE_BOILERPLATE_PATTERNS = [
     /sign in/i,
@@ -88,6 +91,33 @@ async function startServer() {
     /linkedin and 1 more/i,
     /linkedin\s*$/i,
   ];
+  const LINKEDIN_POST_STOP_PATTERNS = [
+    /^like$/i,
+    /^comment$/i,
+    /^share$/i,
+    /^copy$/i,
+    /^facebook$/i,
+    /^x$/i,
+    /^view profile$/i,
+    /^connect$/i,
+    /^explore content categories$/i,
+    /^career$/i,
+    /^productivity$/i,
+    /^finance$/i,
+    /^technology$/i,
+    /^leadership$/i,
+    /^education$/i,
+    /^project management$/i,
+    /^user experience$/i,
+    /^or$/i,
+    /^open the app$/i,
+    /^report this post$/i,
+    /^never miss a beat on the app$/i,
+    /^don.?t have the app\?/i,
+    /^\d[\d,]*\s+followers$/i,
+    /^\d[\d,]*\s+posts$/i,
+    /^\d+[dhmw]$/i,
+  ];
 
   function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
@@ -108,7 +138,14 @@ async function startServer() {
     const matches = normalizedForCache(value).match(/[a-z0-9+#.]{3,}|[\u0590-\u05FF]{2,}/g) || [];
     return matches
       .map((token) => token.replace(/^[^a-z0-9\u0590-\u05FF+#]+|[^a-z0-9\u0590-\u05FF+#]+$/g, ""))
-      .filter((token) => token.length >= 2 && !STOPWORDS.has(token) && !NOISE_KEYWORDS.has(token));
+      .filter((token) => token.length >= 2 && !STOPWORDS.has(token) && !NOISE_KEYWORDS.has(token))
+      .filter((token) => !looksLikeContactNoise(token));
+  }
+
+  function looksLikeContactNoise(token: string): boolean {
+    if (/[a-z]/i.test(token) && token.includes(".")) return true;
+    if (/[a-z]/i.test(token) && /\d/.test(token)) return true;
+    return false;
   }
 
   function uniqueOrdered(values: string[]): string[] {
@@ -149,6 +186,38 @@ async function startServer() {
 
     const deduped = uniqueOrdered(filtered);
     return deduped.join("\n").slice(0, 30000).trim();
+  }
+
+  function extractLinkedInPostBody(rawText: string): string {
+    const lines = rawText
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+
+    const contentStart = lines.findIndex((line) =>
+      /דרוש|דרושה|דרושים|דרוש\/ה|משרה|vacancy|we are hiring|looking for|job description|position|role/i.test(line),
+    );
+
+    const startIndex = contentStart >= 0 ? contentStart : 0;
+    const captured: string[] = [];
+
+    for (let i = startIndex; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (JOB_PAGE_BOILERPLATE_PATTERNS.some((pattern) => pattern.test(line))) continue;
+      if (LINKEDIN_POST_STOP_PATTERNS.some((pattern) => pattern.test(line))) break;
+      if (/^oksana glazman/i.test(line)) continue;
+      if (/head hunter/i.test(line)) continue;
+      if (/^\d[\d,]*$/.test(line)) continue;
+      if (line.length < 2) continue;
+      captured.push(line);
+    }
+
+    const trimmed = uniqueOrdered(captured)
+      .filter((line) => !/^(linkedin|join|sign|privacy|cookie|policy|followers|posts)$/i.test(line))
+      .join("\n")
+      .trim();
+
+    return trimmed;
   }
 
   function buildDeterministicAnalysis(resumeText: string, jobDescription: string) {
@@ -453,7 +522,9 @@ async function startServer() {
         if (selected.length > rawText.length) rawText = selected;
       }
 
-      const text = cleanScrapedJobText(rawText, url);
+      const text = /linkedin\.com\/(?:posts|feed\/update|activity)/i.test(url)
+        ? extractLinkedInPostBody(rawText)
+        : cleanScrapedJobText(rawText, url);
       res.json({ text });
     } catch (error) {
       console.error("Scraping error:", error);
