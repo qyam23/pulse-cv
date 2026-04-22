@@ -118,6 +118,45 @@ async function startServer() {
     /^\d[\d,]*\s+posts$/i,
     /^\d+[dhmw]$/i,
   ];
+  const LINKEDIN_JOB_START_PATTERNS = [
+    /^job description summary/i,
+    /^about the job$/i,
+    /^about us$/i,
+    /^job description$/i,
+    /^responsibilities$/i,
+    /^minimum qualifications$/i,
+    /^qualifications(?:\s*&\s*experience)?$/i,
+    /^job summary$/i,
+    /^what you['’]ll do$/i,
+    /^requirements$/i,
+  ];
+  const LINKEDIN_JOB_STOP_PATTERNS = [
+    /^similar jobs$/i,
+    /^people also viewed$/i,
+    /^recommended for you$/i,
+    /^more jobs like this$/i,
+    /^show fewer jobs like this$/i,
+    /^jobs you may be interested in$/i,
+    /^meet the hiring team$/i,
+    /^about the company$/i,
+    /^report this job$/i,
+    /^save$/i,
+    /^follow$/i,
+    /^share$/i,
+    /^join to apply/i,
+    /^join with email$/i,
+    /^see who .* has hired for this role$/i,
+    /^direct message the job poster/i,
+    /^\d[\d,]*\s+applicants$/i,
+    /^seniority level$/i,
+    /^employment type$/i,
+    /^job function$/i,
+    /^industries$/i,
+    /^get notified about new/i,
+    /^sign in to set job alerts$/i,
+    /^additional information$/i,
+    /^equal opportunity employer/i,
+  ];
 
   function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
@@ -218,6 +257,55 @@ async function startServer() {
       .trim();
 
     return trimmed;
+  }
+
+  function extractLinkedInJobBody(rawText: string): string {
+    const normalizedRawText = rawText
+      .replace(
+        /(Job Description Summary|Job Description|Role Summary|Responsibilities|Minimum Qualifications|Qualifications(?: & Experience)?|Skills & Capabilities|Quality-Specific Goals|Additional Information|Supplier & Cross-Functional Collaboration|System Integration & Testing Support|Assembly Process Development & Optimization|Quality & Problem Solving|EHS & Plant Compliance|NPI Leadership for PET & SPECT Imaging Systems)/g,
+        "\n$1",
+      )
+      .replace(/(GE HealthCare is a leading global medical technology[\s\S]*)/i, "\n$1");
+
+    const lines = normalizedRawText
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+
+    const contentStart = lines.findIndex((line) => LINKEDIN_JOB_START_PATTERNS.some((pattern) => pattern.test(line)));
+    const startIndex = contentStart >= 0 ? contentStart : 0;
+    const captured: string[] = [];
+
+    for (let i = startIndex; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (JOB_PAGE_BOILERPLATE_PATTERNS.some((pattern) => pattern.test(line))) continue;
+      if (LINKEDIN_JOB_STOP_PATTERNS.some((pattern) => pattern.test(line))) break;
+      if (/^apply$/i.test(line)) continue;
+      if (/^easy apply$/i.test(line)) continue;
+      if (/^posted/i.test(line)) continue;
+      if (/^reposted/i.test(line)) continue;
+      if (/^\d[\d,]*\s+reposted$/i.test(line)) continue;
+      if (/^\d[\d,]*\s+followers$/i.test(line)) continue;
+      if (/^(mid-senior level|full-time|part-time|contract|internship)$/i.test(line)) continue;
+      if (/^ge healthcare$/i.test(line)) continue;
+      if (/^(haifa|tel aviv|jerusalem|israel)(,.*)?$/i.test(line)) continue;
+      if (/^tal robins$/i.test(line)) continue;
+      if (/lead recruiting/i.test(line)) continue;
+      if (/^use ai to assess how you fit$/i.test(line)) continue;
+      if (/^get ai-powered advice on this job/i.test(line)) continue;
+      if (/^am i a good fit for this job\?$/i.test(line)) continue;
+      if (/^tailor my resume$/i.test(line)) continue;
+      if (/^set alert$/i.test(line)) continue;
+      if (line.length < 2) continue;
+      captured.push(line);
+    }
+
+    const trimmed = uniqueOrdered(captured)
+      .filter((line) => !/^(linkedin|join|sign|privacy|cookie|policy|followers|posts|apply|save|report)$/i.test(line))
+      .join("\n")
+      .trim();
+
+    return trimmed || cleanScrapedJobText(rawText, "https://www.linkedin.com/jobs/view/");
   }
 
   function buildDeterministicAnalysis(resumeText: string, jobDescription: string) {
@@ -524,7 +612,9 @@ async function startServer() {
 
       const text = /linkedin\.com\/(?:posts|feed\/update|activity)/i.test(url)
         ? extractLinkedInPostBody(rawText)
-        : cleanScrapedJobText(rawText, url);
+        : /linkedin\.com\/jobs\/view/i.test(url)
+          ? extractLinkedInJobBody(rawText)
+          : cleanScrapedJobText(rawText, url);
       res.json({ text });
     } catch (error) {
       console.error("Scraping error:", error);
