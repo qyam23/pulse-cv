@@ -154,8 +154,10 @@ async function startServer() {
     /^industries$/i,
     /^get notified about new/i,
     /^sign in to set job alerts$/i,
-    /^additional information$/i,
-    /^equal opportunity employer/i,
+    /^additional information/i,
+    /equal opportunity employer/i,
+    /^our total rewards/i,
+    /^our mission is/i,
   ];
 
   function clamp(value: number, min: number, max: number): number {
