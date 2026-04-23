@@ -18,6 +18,7 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
   const analysisCache = new Map<string, any>();
+  const requirementPhraseCache = new Map<string, string[]>();
 
   app.use(express.json({ limit: "2mb" }));
 
@@ -78,8 +79,9 @@ async function startServer() {
     "קורות", "חיים", "שליחה", "לשלוח", "אזור", "הצפון", "צפון", "דרום", "מרכז",
     "אישית", "אישי", "שוטפת", "שוטף", "ברמה", "בעבודה", "בתהליכים", "בתהליך",
     "בהנדסה", "בהנדסית", "בניהול", "בידע", "ביכולת", "ביכולות", "בפיתוח", "בייצור",
-    "מוביל", "יצרני", "מוכח", "מחלקת", "רציף", "תעשייתי", "תעשייתית", "תחת", "לחץ",
-    "אנגלית", "גבוה", "גבוהה", "בהובלת", "תהליכי", "ית",
+    "מוביל", "יצרני", "מוכח", "מחלקת", "רציף", "תעשייתי", "תעשייתית", "תהליכית", "תחת", "לחץ",
+    "אנגלית", "גבוה", "גבוהה", "בהובלת", "תהליכי", "ית", "לפחות", "נדרשת",
+    "מחפשת", "מרכזיים", "נרחב", "כמהנדס", "יצרנית", "ההנדסה", "הנדסת",
   ]);
   const HEBREW_PREFIXES = ["ו", "ב", "ל", "כ", "מ", "ש"];
   const HEBREW_NORMALIZATION_BASES = new Set([
@@ -88,6 +90,45 @@ async function startServer() {
     "ציוד", "מערכות", "אוטומציה", "תפוקה", "תחזוקה", "מפעל", "ארגון", "חברה",
     "עבודה", "ידע", "יכולות", "יכולת", "תעשייתי", "תעשייתית",
   ]);
+  const ENGLISH_GENERIC_TERMS = new Set([
+    "required", "preferred", "must", "minimum", "at", "least", "years", "year", "company",
+    "role", "position", "candidate", "looking", "seeking", "needed", "strong", "high",
+    "broad", "extensive", "wide", "central", "significant", "required", "experience",
+  ]);
+  const TECH_PHRASE_PATTERNS = [
+    /AutoCAD/gi,
+    /SolidWorks/gi,
+    /PFMEA/gi,
+    /DFM\/DFA\/DFT/gi,
+    /DFM/gi,
+    /DFA/gi,
+    /NPI/gi,
+    /RCA/gi,
+    /ERP/gi,
+    /CRM/gi,
+    /ISO\s?\d{3,5}/gi,
+    /IEC\s?\d{3,5}/gi,
+    /21\s*CFR\s*820/gi,
+    /Lean manufacturing/gi,
+    /continuous improvement/gi,
+    /process improvement/gi,
+    /systems engineering/gi,
+    /manufacturing processes?/gi,
+    /quality management/gi,
+    /safety/gi,
+    /ניהול עובדים/gu,
+    /ניהול תהליכי? ייצור/gu,
+    /שיפור רציף/gu,
+    /הנדסת מכונות/gu,
+    /הנדסת חשמל/gu,
+    /תעשייה וניהול/gu,
+    /תהליכי? ייצור/gu,
+    /ידע טכני/gu,
+    /בטיחות/gu,
+    /איכות/gu,
+    /מחלקת הנדסה/gu,
+    /הובלת מחלקת הנדסה/gu,
+  ];
   const JOB_PAGE_BOILERPLATE_PATTERNS = [
     /sign in/i,
     /join now/i,
@@ -256,6 +297,238 @@ async function startServer() {
       }
     }
     return output;
+  }
+
+  function normalizePhrase(phrase: string): string {
+    return phrase
+      .replace(/[•*]/g, " ")
+      .replace(/[()״"“”.-]/g, " ")
+      .replace(/\s*\/\s*/g, "/")
+      .replace(/\s*&\s*/g, " and ")
+      .replace(/[,:;]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function phraseTokens(phrase: string): string[] {
+    return tokenize(normalizePhrase(phrase));
+  }
+
+  function isUsefulPhrase(phrase: string): boolean {
+    const normalized = normalizePhrase(phrase);
+    if (!normalized || normalized.length < 2) return false;
+    if (normalized.length > 60) return false;
+    if (/^\d+$/.test(normalized)) return false;
+    const tokens = phraseTokens(normalized);
+    if (!tokens.length) return false;
+    if (tokens.length > 6) return false;
+    const usefulTokens = tokens.filter((token) => !HEBREW_GENERIC_TERMS.has(token) && !ENGLISH_GENERIC_TERMS.has(token));
+    if (!usefulTokens.length) return false;
+    if (usefulTokens.length / tokens.length < 0.5) return false;
+    if (tokens.every((token) => HEBREW_GENERIC_TERMS.has(token) || ENGLISH_GENERIC_TERMS.has(token))) return false;
+    if (/(מחפשת|נדרשת|לפחות|חובה|ניסיון של)/u.test(normalized)) return false;
+    if (tokens.length === 1 && tokens[0].length < 4 && !/[A-Z]/.test(normalized)) return false;
+    return true;
+  }
+
+  function dedupePhrases(values: string[]): string[] {
+    const seen = new Set<string>();
+    const output: string[] = [];
+    for (const value of values) {
+      const variants = value.includes("/")
+        ? value.split("/").map((part) => normalizePhrase(part)).filter(Boolean)
+        : [value];
+      for (const variant of variants) {
+        const normalized = normalizePhrase(variant).toLowerCase();
+        if (!normalized || seen.has(normalized) || !isUsefulPhrase(variant)) continue;
+        seen.add(normalized);
+        output.push(normalizePhrase(variant));
+      }
+    }
+    return output;
+  }
+
+  function splitClauses(text: string): string[] {
+    return text
+      .split(/\r?\n|[•*.]/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .flatMap((line) => line.split(/[;]+/).map((part) => part.trim()).filter(Boolean));
+  }
+
+  function collectSlashPhrases(text: string): string[] {
+    const matches = text.match(/[\u0590-\u05FFa-zA-Z][^,\n]{0,80}\/[^,\n]{1,80}/g) || [];
+    return matches.flatMap((match) =>
+      match
+        .split("/")
+        .map((part) => normalizePhrase(part))
+        .filter((part) => !/[.]/.test(part))
+        .filter((part) => part.split(/\s+/).length <= 4)
+        .filter((part) => !/^ת\s/u.test(part))
+        .filter((part) => isUsefulPhrase(part))
+    );
+  }
+
+  function collectTriggerPhrases(text: string): string[] {
+    const triggers = [
+      /(?:ניסיון(?: של \d+ שנים?)? ב|ידע(?: וניסיון)? ב|עבודה עם תוכנות|השכלה בתחום|ניסיון בעבודה עם|הובלה של|ניהול של|הבנה של)\s+([^,\n]+)/gu,
+      /(?:experience with|experience in|knowledge of|knowledge in|working with|education in|degree in|leadership of|management of)\s+([^,\n]+)/giu,
+    ];
+    const results: string[] = [];
+    for (const pattern of triggers) {
+      for (const match of text.matchAll(pattern)) {
+        const candidate = normalizePhrase(match[1] || "");
+        if (!candidate) continue;
+        candidate
+          .split(/\s+ו|\s+and\s+|,\s*/i)
+          .map((part) => normalizePhrase(part))
+          .filter((part) => isUsefulPhrase(part))
+          .forEach((part) => results.push(part));
+      }
+    }
+    return results;
+  }
+
+  function collectSpecificHebrewRequirementPhrases(text: string): string[] {
+    const results: string[] = [];
+    const patterns = [
+      /הובלה של מחלקת ההנדסה/gu,
+      /ניהול עובדים/gu,
+      /פיתוח של תהליכים מרכזיים/gu,
+      /תהליכי ייצור/gu,
+      /ידע טכני/gu,
+      /הנדסת מכונות/gu,
+      /הנדסת חשמל/gu,
+      /תעשייה וניהול/gu,
+      /בטיחות/gu,
+      /איכות/gu,
+      /ציוד/gu,
+      /AutoCAD/giu,
+      /SolidWorks/giu,
+    ];
+    for (const pattern of patterns) {
+      for (const match of text.matchAll(pattern)) {
+        results.push(match[0]);
+      }
+    }
+    return results;
+  }
+
+  function collectLinePhrases(text: string): string[] {
+    const output: string[] = [];
+    for (const clause of splitClauses(text)) {
+      const normalized = normalizePhrase(clause);
+      if (!normalized) continue;
+      const parts = normalized
+        .split(/,|\s+ו(?=[\u0590-\u05FF])|\s+and\s+/i)
+        .map((part) => normalizePhrase(part))
+        .filter(Boolean);
+      for (const part of parts) {
+        const words = part.split(/\s+/).filter(Boolean);
+        if (words.length >= 2 && words.length <= 5 && isUsefulPhrase(part)) {
+          output.push(part);
+        }
+      }
+    }
+    return output;
+  }
+
+  function collectTechPatternPhrases(text: string): string[] {
+    const output: string[] = [];
+    for (const pattern of TECH_PHRASE_PATTERNS) {
+      for (const match of text.matchAll(pattern)) {
+        output.push(match[0]);
+      }
+    }
+    return output;
+  }
+
+  function extractHeuristicRequirementPhrases(text: string): string[] {
+    const isHebrew = /[\u0590-\u05FF]/.test(text);
+    const combined = isHebrew
+      ? [
+          ...collectSpecificHebrewRequirementPhrases(text),
+          ...collectTechPatternPhrases(text),
+          ...collectSlashPhrases(text),
+        ]
+      : [
+          ...collectTechPatternPhrases(text),
+          ...collectSlashPhrases(text),
+          ...collectTriggerPhrases(text),
+          ...collectLinePhrases(text),
+        ];
+    return dedupePhrases(combined).slice(0, 24);
+  }
+
+  async function refineRequirementPhrasesWithAi(jobDescription: string, candidates: string[]): Promise<string[] | null> {
+    const token = getHuggingFaceToken();
+    if (!token) return null;
+    const prompt = [
+      "Extract only concrete skills, tools, domains, and requirement phrases from this job description.",
+      "Return JSON only with schema: {\"phrases\":[...]}",
+      "Exclude generic words and descriptors such as: required, at least, company, broad, high level, חובה, לפחות, מחפשת, נדרשת.",
+      "Prefer phrases like 'הנדסת מכונות', 'ניהול עובדים', 'AutoCAD', 'SolidWorks', 'process improvement', 'quality management'.",
+      "Keep the source language.",
+      `Candidate phrases: ${candidates.join(" | ")}`,
+      "Job description:",
+      jobDescription.slice(0, 10000),
+    ].join("\n");
+
+    for (const model of getHuggingFaceModels()) {
+      try {
+        const response = await axios.post(
+          "https://router.huggingface.co/v1/chat/completions",
+          {
+            model,
+            messages: [
+              { role: "system", content: "Return JSON only. No prose." },
+              { role: "user", content: prompt },
+            ],
+            temperature: 0,
+            max_tokens: 700,
+            stream: false,
+            response_format: { type: "json_object" },
+          },
+          {
+            timeout: 30000,
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        const parsed = parseAnalysisJson(extractProviderText(response.data));
+        if (Array.isArray(parsed?.phrases)) {
+          const refined = dedupePhrases(parsed.phrases.map((item: any) => String(item)));
+          if (refined.length) return refined.slice(0, 20);
+        }
+      } catch (error: any) {
+        console.warn("Requirement phrase AI refinement failed", model, error.response?.data || error.message);
+      }
+    }
+    return null;
+  }
+
+  async function extractRequirementPhrases(jobDescription: string): Promise<string[]> {
+    const cacheKey = crypto.createHash("sha1").update(normalizedForCache(jobDescription)).digest("hex");
+    const cached = requirementPhraseCache.get(cacheKey);
+    if (cached) return cached;
+
+    const heuristic = extractHeuristicRequirementPhrases(jobDescription);
+    const isHebrew = /[\u0590-\u05FF]/.test(jobDescription);
+    const refined = isHebrew ? null : await refineRequirementPhrasesWithAi(jobDescription, heuristic);
+    const finalPhrases = dedupePhrases(refined && refined.length ? refined : heuristic).slice(0, 18);
+    requirementPhraseCache.set(cacheKey, finalPhrases);
+    return finalPhrases;
+  }
+
+  function resumeHasPhraseEvidence(resumeText: string, phrase: string): boolean {
+    const normalizedResume = normalizedForCache(resumeText);
+    const normalizedPhrase = normalizedForCache(phrase);
+    if (normalizedResume.includes(normalizedPhrase)) return true;
+    const phraseWords = phraseTokens(phrase);
+    if (!phraseWords.length) return false;
+    return phraseWords.every((word) => normalizedResume.includes(word));
   }
 
   function queryFirstText($: cheerio.CheerioAPI, selectors: string[]): string {
@@ -444,11 +717,10 @@ async function startServer() {
     };
   }
 
-  function buildDeterministicAnalysis(resumeText: string, jobDescription: string) {
-    const resumeTokens = new Set(tokenize(resumeText));
-    const jdKeywords = extractDeterministicKeywords(jobDescription);
-    const matchedKeywords = jdKeywords.filter((keyword) => resumeTokens.has(keyword));
-    const missingKeywords = jdKeywords.filter((keyword) => !resumeTokens.has(keyword));
+  async function buildDeterministicAnalysis(resumeText: string, jobDescription: string) {
+    const jdKeywords = await extractRequirementPhrases(jobDescription);
+    const matchedKeywords = jdKeywords.filter((keyword) => resumeHasPhraseEvidence(resumeText, keyword));
+    const missingKeywords = jdKeywords.filter((keyword) => !resumeHasPhraseEvidence(resumeText, keyword));
     const coverage = jdKeywords.length ? matchedKeywords.length / jdKeywords.length : 0;
     const hasNumbers = /(?:\d+%|\d+\s*(?:years|שנים|לקוחות|פרויקטים|עובדים|קווים|sites?))/i.test(resumeText);
     const hasEnglish = /english|אנגלית/i.test(resumeText);
@@ -658,7 +930,7 @@ async function startServer() {
   }
 
   async function analyzeWithLmStudio(resumeText: string, jobDescription: string) {
-    const deterministic = buildDeterministicAnalysis(resumeText, jobDescription);
+    const deterministic = await buildDeterministicAnalysis(resumeText, jobDescription);
     const baseUrl = process.env.LM_STUDIO_BASE_URL || "http://localhost:1234/v1";
     const model = await detectLmStudioModel();
     if (!model) {
@@ -711,7 +983,7 @@ async function startServer() {
   }
 
   async function analyzeWithHuggingFaceRouter(resumeText: string, jobDescription: string) {
-    const deterministic = buildDeterministicAnalysis(resumeText, jobDescription);
+    const deterministic = await buildDeterministicAnalysis(resumeText, jobDescription);
     const token = getHuggingFaceToken();
     if (!token) {
       const error = new Error("Hugging Face token is not configured.");
@@ -845,7 +1117,7 @@ async function startServer() {
       return res.json({ ...cached, cached: true });
     }
 
-    const deterministic = buildDeterministicAnalysis(resumeText, jobDescription);
+    const deterministic = await buildDeterministicAnalysis(resumeText, jobDescription);
 
     if (provider === "lmstudio") {
       try {
@@ -931,7 +1203,7 @@ async function startServer() {
       return res.json({ ...cached, cached: true });
     }
 
-    const deterministic = buildDeterministicAnalysis(resumeText, jobDescription);
+    const deterministic = await buildDeterministicAnalysis(resumeText, jobDescription);
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Gemini key is not configured; deterministic ATS score was still completed." };
