@@ -70,6 +70,24 @@ async function startServer() {
     "content", "main", "feed", "password", "forgot", "terms", "accessibility", "through", "having",
     "post", "followers", "head", "hunter", "profile", "connect", "copy", "comment", "share",
   ]);
+  const HEBREW_GENERIC_TERMS = new Set([
+    "חובה", "יתרון", "ניסיון", "יכולת", "יכולות", "ידע", "רמה", "גבוהה", "גבוה",
+    "עבודה", "עובדים", "תחום", "בתחום", "ארגון", "בארגון", "חברה", "בחברה",
+    "מפעל", "במפעל", "תפקיד", "משרה", "דרוש", "דרושה", "דרושים", "שנים",
+    "שנה", "כולל", "אחר", "אחרת", "ישיר", "ישירות", "נא", "מייל", "קו״ח",
+    "קורות", "חיים", "שליחה", "לשלוח", "אזור", "הצפון", "צפון", "דרום", "מרכז",
+    "אישית", "אישי", "שוטפת", "שוטף", "ברמה", "בעבודה", "בתהליכים", "בתהליך",
+    "בהנדסה", "בהנדסית", "בניהול", "בידע", "ביכולת", "ביכולות", "בפיתוח", "בייצור",
+    "מוביל", "יצרני", "מוכח", "מחלקת", "רציף", "תעשייתי", "תעשייתית", "תחת", "לחץ",
+    "אנגלית", "גבוה", "גבוהה", "בהובלת", "תהליכי", "ית",
+  ]);
+  const HEBREW_PREFIXES = ["ו", "ב", "ל", "כ", "מ", "ש"];
+  const HEBREW_NORMALIZATION_BASES = new Set([
+    "ניהול", "הנדסה", "הנדסי", "הנדסית", "פיתוח", "ייצור", "יצור", "תהליך", "תהליכים",
+    "איכות", "בטיחות", "תפעול", "פרויקטים", "פרויקט", "מכונות", "אלקטרוניקה",
+    "ציוד", "מערכות", "אוטומציה", "תפוקה", "תחזוקה", "מפעל", "ארגון", "חברה",
+    "עבודה", "ידע", "יכולות", "יכולת", "תעשייתי", "תעשייתית",
+  ]);
   const JOB_PAGE_BOILERPLATE_PATTERNS = [
     /sign in/i,
     /join now/i,
@@ -189,6 +207,21 @@ async function startServer() {
     return value.toLowerCase().replace(/\s+/g, " ").trim();
   }
 
+  function normalizeKeywordToken(token: string): string {
+    let value = token.toLowerCase().trim();
+    if (/^[\u0590-\u05FF]+$/u.test(value)) {
+      while (value.length >= 5 && HEBREW_PREFIXES.includes(value[0])) {
+        const candidate = value.slice(1);
+        if (HEBREW_GENERIC_TERMS.has(candidate) || HEBREW_NORMALIZATION_BASES.has(candidate)) {
+          value = candidate;
+          break;
+        }
+        break;
+      }
+    }
+    return value;
+  }
+
   function analysisCacheKey(resumeText: string, jobDescription: string): string {
     return crypto
       .createHash("sha256")
@@ -200,7 +233,10 @@ async function startServer() {
     const matches = normalizedForCache(value).match(/[a-z0-9+#.]{3,}|[\u0590-\u05FF]{2,}/g) || [];
     return matches
       .map((token) => token.replace(/^[^a-z0-9\u0590-\u05FF+#]+|[^a-z0-9\u0590-\u05FF+#]+$/g, ""))
+      .map((token) => normalizeKeywordToken(token))
       .filter((token) => token.length >= 2 && !STOPWORDS.has(token) && !NOISE_KEYWORDS.has(token))
+      .filter((token) => !HEBREW_GENERIC_TERMS.has(token))
+      .filter((token) => !/^(גבוה|גבוהה|ישיר|ישירות|אישי|אישית|שוטף|שוטפת)$/u.test(token))
       .filter((token) => !looksLikeContactNoise(token));
   }
 
