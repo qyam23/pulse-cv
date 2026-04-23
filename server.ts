@@ -239,6 +239,34 @@ async function startServer() {
     ".show-more-less-html__markup",
     ".description__text",
   ];
+  type SkillCatalogEntry = {
+    label: string;
+    patterns?: RegExp[];
+    aliases?: string[];
+  };
+  const MULTILINGUAL_SKILL_CATALOG: SkillCatalogEntry[] = [
+    { label: "AutoCAD", aliases: ["AutoCAD"] },
+    { label: "SolidWorks", aliases: ["SolidWorks"] },
+    { label: "PFMEA", aliases: ["PFMEA"] },
+    { label: "ERP", aliases: ["ERP"] },
+    { label: "CRM", aliases: ["CRM"] },
+    { label: "Lean manufacturing", aliases: ["Lean manufacturing", "ייצור רזה"], patterns: [/\blean\b/iu] },
+    { label: "Continuous improvement", aliases: ["continuous improvement", "process improvement", "שיפור רציף", "שיפור תהליכים"] },
+    { label: "Project management", aliases: ["project management", "manage projects", "ניהול פרויקטים"] },
+    { label: "Employee management", aliases: ["people management", "team leadership", "ניהול עובדים", "ניהול צוות", "הובלת עובדים"] },
+    { label: "Manufacturing processes", aliases: ["manufacturing processes", "production processes", "תהליכי ייצור", "תהליך ייצור"] },
+    { label: "Mechanical engineering", aliases: ["mechanical engineering", "mechanical engineer", "הנדסת מכונות"] },
+    { label: "Electrical engineering", aliases: ["electrical engineering", "electrical engineer", "הנדסת חשמל"] },
+    { label: "Industrial engineering", aliases: ["industrial engineering", "industrial engineer", "תעשייה וניהול", "הנדסת תעשייה"] },
+    { label: "Quality management", aliases: ["quality management", "quality", "איכות"] },
+    { label: "Safety", aliases: ["safety", "בטיחות"] },
+    { label: "Equipment engineering", aliases: ["equipment", "ציוד"] },
+    { label: "Automation", aliases: ["automation", "אוטומציה"] },
+    { label: "Technical knowledge", aliases: ["technical knowledge", "technical understanding", "ידע טכני"] },
+    { label: "Engineering leadership", aliases: ["engineering leadership", "head of engineering", "מחלקת ההנדסה", "הובלה של מחלקת ההנדסה"] },
+    { label: "Process development", aliases: ["process development", "development of key processes", "פיתוח של תהליכים מרכזיים", "פיתוח תהליכים"] },
+    { label: "English proficiency", aliases: ["אנגלית ברמה גבוהה"], patterns: [/english.+high/i, /high level english/i] },
+  ];
 
   function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
@@ -414,6 +442,32 @@ async function startServer() {
     return results;
   }
 
+  function collectCatalogRequirementPhrases(text: string): string[] {
+    const normalizedText = normalizedForCache(text);
+    const sourceIsHebrew = /[\u0590-\u05FF]/.test(text);
+    const matches: string[] = [];
+    for (const entry of MULTILINGUAL_SKILL_CATALOG) {
+      let matchedPhrase =
+        entry.aliases?.find((alias) => normalizedText.includes(normalizedForCache(alias))) || "";
+      if (!matchedPhrase && entry.patterns?.some((pattern) => {
+          const safePattern = new RegExp(pattern.source, pattern.flags.replace(/g/g, ""));
+          return safePattern.test(text);
+        })) {
+        matchedPhrase = entry.label;
+      }
+      if (matchedPhrase) {
+        if (sourceIsHebrew && entry.aliases?.length) {
+          const hebrewAlias = entry.aliases.find((alias) => /[\u0590-\u05FF]/.test(alias));
+          const isToolLike = /^[A-Z0-9+#.-]{2,}$/.test(entry.label) || /AutoCAD|SolidWorks|ERP|CRM|PFMEA/i.test(entry.label);
+          matches.push(hebrewAlias || (isToolLike ? entry.label : matchedPhrase));
+        } else {
+          matches.push(matchedPhrase);
+        }
+      }
+    }
+    return matches;
+  }
+
   function collectLinePhrases(text: string): string[] {
     const output: string[] = [];
     for (const clause of splitClauses(text)) {
@@ -445,13 +499,16 @@ async function startServer() {
 
   function extractHeuristicRequirementPhrases(text: string): string[] {
     const isHebrew = /[\u0590-\u05FF]/.test(text);
+    const catalogHits = collectCatalogRequirementPhrases(text);
     const combined = isHebrew
       ? [
+          ...catalogHits,
           ...collectSpecificHebrewRequirementPhrases(text),
           ...collectTechPatternPhrases(text),
           ...collectSlashPhrases(text),
         ]
       : [
+          ...catalogHits,
           ...collectTechPatternPhrases(text),
           ...collectSlashPhrases(text),
           ...collectTriggerPhrases(text),
