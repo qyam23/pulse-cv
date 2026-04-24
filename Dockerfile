@@ -11,7 +11,7 @@ COPY server ./server
 COPY intelligence ./intelligence
 COPY scripts ./scripts
 COPY requirements-doc-worker.txt ./requirements-doc-worker.txt
-RUN python3 -m pip install --no-cache-dir -r requirements-doc-worker.txt
+RUN python3 -m pip install --break-system-packages --no-cache-dir -r requirements-doc-worker.txt
 
 EXPOSE 7860
 ENV NODE_ENV=production
