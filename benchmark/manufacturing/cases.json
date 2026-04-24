@@ -1,0 +1,44 @@
+[
+  {
+    "id": "factory-engineer-strong-fit",
+    "description": "Factory engineer JD with strong manufacturing/process/tools evidence in the CV.",
+    "resumeText": "Senior manufacturing engineer with 8 years in factory engineering, continuous improvement, quality management, safety ownership, AutoCAD, SolidWorks, and leading engineering teams across production lines.",
+    "jobDescription": "Industrial company seeks a Factory Engineer. Lead the engineering department and drive continuous improvement across manufacturing processes, equipment, safety, and quality. Mechanical engineering background required. 5+ years of factory engineering experience required. Experience leading employees and using AutoCAD and SolidWorks is required. High English proficiency required.",
+    "expected": {
+      "primaryDomain": "manufacturing",
+      "roleFamily": "plant_engineering",
+      "minFinalScore": 65,
+      "minConfidenceScore": 75,
+      "mustIncludeMatched": ["AutoCAD", "SolidWorks", "Continuous Improvement", "Quality Management"],
+      "mustIncludeMissing": []
+    }
+  },
+  {
+    "id": "factory-engineer-partial-fit",
+    "description": "Strong industrial leader but without direct factory engineer title or CAD tools.",
+    "resumeText": "Operations and project leader with 12 years in industrial systems, process optimization, vendor management, and production support. Led technicians and cross-functional teams, improved yield, and managed plant upgrades.",
+    "jobDescription": "Industrial company seeks a Factory Engineer. Lead the engineering department and drive continuous improvement across manufacturing processes, equipment, safety, and quality. Mechanical engineering background required. 5+ years of factory engineering experience required. Experience leading employees and using AutoCAD and SolidWorks is required. High English proficiency required.",
+    "expected": {
+      "primaryDomain": "manufacturing",
+      "roleFamily": "plant_engineering",
+      "minFinalScore": 28,
+      "maxFinalScore": 72,
+      "minConfidenceScore": 70,
+      "mustIncludeMatched": ["Manufacturing"],
+      "mustIncludeMissing": ["AutoCAD", "SolidWorks"]
+    }
+  },
+  {
+    "id": "maintenance-manager-domain-check",
+    "description": "Maintenance-heavy CV against manufacturing engineering JD should keep some fit but expose title/domain gaps.",
+    "resumeText": "Maintenance manager with 10 years of shutdown planning, reliability engineering, safety, CMMS usage, technician leadership, and root cause analysis in a chemical plant.",
+    "jobDescription": "Advanced Manufacturing Engineer role. Support manufacturing processes, quality systems, process development, validation, and engineering tools including AutoCAD and SolidWorks. Requires engineering degree and cross-functional manufacturing leadership.",
+    "expected": {
+      "primaryDomain": "manufacturing",
+      "minFinalScore": 18,
+      "maxFinalScore": 55,
+      "mustIncludeMatched": [],
+      "mustIncludeMissing": ["AutoCAD", "SolidWorks"]
+    }
+  }
+]

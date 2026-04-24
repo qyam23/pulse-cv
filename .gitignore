@@ -18,3 +18,4 @@ hf_site.out.log
 hf_site.err.log
 .sandbox/
 .env.sandbox
+data/telemetry/

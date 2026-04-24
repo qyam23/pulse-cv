@@ -9,7 +9,17 @@ import * as cheerio from "cheerio";
 import dns from "dns/promises";
 import net from "net";
 import { GoogleGenAI, Type } from "@google/genai";
-import { buildEnrichedPrompt } from "./intelligence/promptEnricher";
+import {
+  buildEvidenceBasedAnalysis,
+  previewJobDescription,
+  previewResumeText,
+} from "./server/analysis/engine";
+import {
+  readTelemetrySummary,
+  recordProductEvent,
+  recordQualityEvent,
+} from "./server/analytics/telemetry";
+import { manufacturingPack } from "./server/domain/manufacturingPack";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,11 +49,13 @@ async function startServer() {
     const provider = getActiveProvider();
     res.json({
       ok: true,
+      product: "Pulse CV - Evidence-Based Hiring Intelligence",
       runtime: process.env.NODE_ENV === "production" ? "production" : "development",
       provider,
       aiConfigured: hasServerSideAiToken(provider),
       model: provider.includes("huggingface") || provider === "hf" ? getHuggingFaceModels()[0] : process.env.LM_STUDIO_MODEL || null,
-      scoringMode: "deterministic",
+      scoringMode: "evidence-based-deterministic",
+      vertical: "manufacturing",
     });
   });
 
@@ -54,7 +66,17 @@ async function startServer() {
       aiConfigured: hasServerSideAiToken(provider),
       model: provider.includes("huggingface") || provider === "hf" ? getHuggingFaceModels()[0] : process.env.LM_STUDIO_MODEL || null,
       keyVisibleToBrowser: false,
-      scoringMode: "deterministic",
+      scoringMode: "evidence-based-deterministic",
+      product: "Pulse CV - Evidence-Based Hiring Intelligence",
+    });
+  });
+
+  app.get("/api/analytics/summary", async (_req, res) => {
+    const summary = await readTelemetrySummary();
+    res.json({
+      ...summary,
+      vertical: "manufacturing",
+      product: "Pulse CV - Evidence-Based Hiring Intelligence",
     });
   });
 
@@ -819,27 +841,18 @@ async function startServer() {
     };
   }
 
-  function mergeDeterministicTruth(deterministic: any, aiResult: any, provider: string, model?: string) {
-    return {
-      ...deterministic,
-      profileSummary: typeof aiResult?.profileSummary === "string" && aiResult.profileSummary.trim() ? aiResult.profileSummary : deterministic.profileSummary,
-      tailoredBio: typeof aiResult?.tailoredBio === "string" && aiResult.tailoredBio.trim() ? aiResult.tailoredBio : deterministic.tailoredBio,
-      bulletPointOptimization: Array.isArray(aiResult?.bulletPointOptimization) && aiResult.bulletPointOptimization.length
-        ? aiResult.bulletPointOptimization.slice(0, 4)
-        : deterministic.bulletPointOptimization,
-      provider,
-      model,
-      scoringMode: "deterministic",
-      scoreLocked: true,
-    };
-  }
-
   function rememberAnalysis(key: string, value: any) {
     analysisCache.set(key, value);
     if (analysisCache.size > 100) {
       const oldest = analysisCache.keys().next().value;
       analysisCache.delete(oldest);
     }
+  }
+
+  function countMissingMustHaves(result: any): number {
+    return Object.values(result.missingRequirementsByType || {})
+      .flat()
+      .filter((item: any) => item?.requirement?.mustHave).length;
   }
 
   async function isSafeUrl(rawUrl: string): Promise<boolean> {
@@ -942,24 +955,79 @@ async function startServer() {
     return null;
   }
 
-  function buildPrompt(resumeText: string, jobDescription: string): string {
-    try {
-      return buildEnrichedPrompt(resumeText, jobDescription);
-    } catch (error) {
-      console.warn("Prompt enrichment failed; falling back to base prompt.", error);
-      return `
-        <instruction>
-        You are a World-Class Executive Career Architect and Master ATS Auditor.
-        Analyze the following Resume against the Job Description with extreme precision.
-        RULES:
-        1. LANGUAGE: Detect the language of the inputs. If the Resume is in Hebrew, provide the entire analysis in Hebrew. If it's in English, respond in English.
-        2. OUTPUT: Return ONLY valid JSON.
-        </instruction>
-        RESUME: ${resumeText}
-        JD: ${jobDescription}
-        Provide DEEP ANALYSIS in JSON matching the existing AnalysisResult schema.
-      `;
-    }
+  function buildExplanationPrompt(resumeText: string, jobDescription: string, analysis: any): string {
+    return `
+<instruction>
+You are Pulse CV's explanation layer for evidence-based hiring intelligence.
+The deterministic engine already extracted typed requirements, evidence, grouped gaps, and an explainable score.
+
+Rules:
+1. Do not change, replace, or contradict any deterministic scores or requirement states.
+2. Do not invent experience, tools, responsibilities, or education not present in the CV.
+3. Keep the response grounded in the provided evidence and uncertainty flags.
+4. Return JSON only.
+5. If the content is Hebrew, answer in Hebrew. If English, answer in English.
+</instruction>
+
+<deterministic_analysis>
+${JSON.stringify({
+  domainDetection: analysis.domainDetection,
+  scoringBreakdown: analysis.scoringBreakdown,
+  uncertaintyFlags: analysis.uncertaintyFlags,
+  strengths: analysis.strengths,
+  weaknesses: analysis.weaknesses,
+  candidateRecommendations: analysis.candidateRecommendations,
+  recruiterRecommendations: analysis.recruiterRecommendations,
+  evidenceMap: analysis.evidenceMap.slice(0, 12),
+  jdQualityWarnings: analysis.jdQualityWarnings,
+}, null, 2)}
+</deterministic_analysis>
+
+<resume>
+${resumeText}
+</resume>
+
+<job_description>
+${jobDescription}
+</job_description>
+
+Return JSON with this shape:
+{
+  "profileSummary": "string",
+  "tailoredBio": "string",
+  "candidateRecommendations": {
+    "wordingFixes": ["string"],
+    "proofGaps": ["string"],
+    "likelyInterviewQuestions": ["string"],
+    "titleAlignmentSuggestions": ["string"]
+  },
+  "recruiterRecommendations": {
+    "verifyManually": ["string"],
+    "weakEvidenceZones": ["string"],
+    "interviewProbes": ["string"],
+    "possibleFalseNegatives": ["string"]
+  },
+  "bulletPointOptimization": [
+    { "original": "string", "optimized": "string", "rationale": "string" }
+  ]
+}
+`;
+  }
+
+  function mergeDeterministicTruth(deterministic: any, aiResult: any, provider: string, model?: string) {
+    return {
+      ...deterministic,
+      profileSummary: deterministic.profileSummary,
+      tailoredBio: deterministic.tailoredBio,
+      bulletPointOptimization: deterministic.bulletPointOptimization,
+      candidateRecommendations: deterministic.candidateRecommendations,
+      recruiterRecommendations: deterministic.recruiterRecommendations,
+      recommendations: deterministic.recommendations,
+      provider,
+      model,
+      scoringMode: deterministic.scoringMode,
+      scoreLocked: true,
+    };
   }
 
   async function detectLmStudioModel(): Promise<string | null> {
@@ -986,8 +1054,7 @@ async function startServer() {
     return JSON.parse(jsonText);
   }
 
-  async function analyzeWithLmStudio(resumeText: string, jobDescription: string) {
-    const deterministic = await buildDeterministicAnalysis(resumeText, jobDescription);
+  async function analyzeWithLmStudio(resumeText: string, jobDescription: string, deterministic: any) {
     const baseUrl = process.env.LM_STUDIO_BASE_URL || "http://localhost:1234/v1";
     const model = await detectLmStudioModel();
     if (!model) {
@@ -996,7 +1063,7 @@ async function startServer() {
       throw error;
     }
 
-    const prompt = buildPrompt(resumeText, jobDescription);
+    const prompt = buildExplanationPrompt(resumeText, jobDescription, deterministic);
     const response = await axios.post(
       `${baseUrl}/chat/completions`,
       {
@@ -1004,12 +1071,12 @@ async function startServer() {
         messages: [
           {
             role: "system",
-            content: "You are a precise ATS resume analyzer. Return only valid JSON. Do not invent facts.",
+            content: "You improve wording and explanations for an evidence-based hiring report. Return only valid JSON. Do not invent facts.",
           },
           { role: "user", content: prompt },
         ],
         temperature: 0.1,
-        max_tokens: 1400,
+        max_tokens: 1800,
         stream: false,
       },
       {
@@ -1039,8 +1106,7 @@ async function startServer() {
       .filter(Boolean);
   }
 
-  async function analyzeWithHuggingFaceRouter(resumeText: string, jobDescription: string) {
-    const deterministic = await buildDeterministicAnalysis(resumeText, jobDescription);
+  async function analyzeWithHuggingFaceRouter(resumeText: string, jobDescription: string, deterministic: any) {
     const token = getHuggingFaceToken();
     if (!token) {
       const error = new Error("Hugging Face token is not configured.");
@@ -1048,7 +1114,7 @@ async function startServer() {
       throw error;
     }
 
-    const prompt = buildPrompt(resumeText, jobDescription);
+    const prompt = buildExplanationPrompt(resumeText, jobDescription, deterministic);
     const models = getHuggingFaceModels();
     let lastError: any = null;
 
@@ -1061,12 +1127,12 @@ async function startServer() {
             messages: [
               {
                 role: "system",
-                content: "You are a precise ATS resume analyzer. Return only valid JSON. Do not invent facts.",
+                content: "You improve wording and explanations for an evidence-based hiring report. Return only valid JSON. Do not invent facts.",
               },
               { role: "user", content: prompt },
             ],
             temperature: 0,
-            max_tokens: 1600,
+            max_tokens: 1800,
             stream: false,
             response_format: { type: "json_object" },
           },
@@ -1156,6 +1222,73 @@ async function startServer() {
     }
   });
 
+  app.get("/api/domain-packs/manufacturing", (_req, res) => {
+    res.json({
+      key: manufacturingPack.key,
+      displayName: manufacturingPack.displayName,
+      titlesCatalog: manufacturingPack.titlesCatalog,
+      toolsCatalog: manufacturingPack.toolsCatalog,
+      methodsCatalog: manufacturingPack.methodsCatalog,
+      domainConcepts: manufacturingPack.domainConcepts,
+      leadershipSignals: manufacturingPack.leadershipSignals,
+      requirementsWeighting: manufacturingPack.requirementsWeighting,
+    });
+  });
+
+  app.post("/api/jd/parse", async (req, res) => {
+    const { jobDescription } = req.body;
+    if (!jobDescription || typeof jobDescription !== "string") {
+      return res.status(400).json({ error: "INPUT_MISSING", message: "Job description text is required." });
+    }
+    const parsed = previewJobDescription(jobDescription);
+    await recordProductEvent("jd.parse", {
+      domain: parsed.domainDetection.primaryDomain,
+      roleFamily: parsed.domainDetection.roleFamily,
+      warningCount: parsed.jdQualityWarnings?.length || 0,
+    });
+    return res.json(parsed);
+  });
+
+  app.post("/api/cv/parse", async (req, res) => {
+    const { resumeText } = req.body;
+    if (!resumeText || typeof resumeText !== "string") {
+      return res.status(400).json({ error: "INPUT_MISSING", message: "Resume text is required." });
+    }
+    const parsed = previewResumeText(resumeText);
+    await recordProductEvent("cv.parse", {
+      detectedSignalCount: parsed.parsedSections.detectedSignals.length,
+      topLineCount: parsed.parsedSections.topLines.length,
+    });
+    return res.json(parsed);
+  });
+
+  app.post("/api/jd/lint", async (req, res) => {
+    const { jobDescription } = req.body;
+    if (!jobDescription || typeof jobDescription !== "string") {
+      return res.status(400).json({ error: "INPUT_MISSING", message: "Job description text is required." });
+    }
+    const parsed = previewJobDescription(jobDescription);
+    await recordQualityEvent("jd.lint", {
+      domain: parsed.domainDetection?.primaryDomain,
+      warningCount: parsed.jdQualityWarnings?.length || 0,
+      highRiskWarningCount: (parsed.jdQualityWarnings || []).filter((warning: any) => warning.severity === "high_risk").length,
+    });
+    return res.json({
+      domainDetection: parsed.domainDetection,
+      jdQualityWarnings: parsed.jdQualityWarnings,
+      analysisMeta: parsed.analysisMeta,
+    });
+  });
+
+  app.post("/api/feedback/correction", async (req, res) => {
+    const payload = req.body || {};
+    await recordProductEvent("feedback.correction", {
+      source: "public-ui",
+      ...payload,
+    });
+    return res.json({ ok: true });
+  });
+
   // API to analyze resume using Hugging Face Thinking Model
   app.post("/api/analyze", async (req, res) => {
     const { resumeText, jobDescription } = req.body;
@@ -1174,30 +1307,64 @@ async function startServer() {
       return res.json({ ...cached, cached: true });
     }
 
-    const deterministic = await buildDeterministicAnalysis(resumeText, jobDescription);
+    const deterministic = buildEvidenceBasedAnalysis(resumeText, jobDescription);
+    await recordProductEvent("analysis.started", {
+      domain: deterministic.domainDetection.primaryDomain,
+      roleFamily: deterministic.domainDetection.roleFamily,
+      confidence: deterministic.domainDetection.confidence,
+      mustHaveCount: Object.values(deterministic.jdRequirementsByType).flat().filter((item: any) => item.mustHave).length,
+      missingMustHaveCount: countMissingMustHaves(deterministic),
+      scoringMode: deterministic.scoringMode,
+    });
 
     if (provider === "lmstudio") {
       try {
-        const result = await analyzeWithLmStudio(resumeText, jobDescription);
+        const result = await analyzeWithLmStudio(resumeText, jobDescription, deterministic);
         rememberAnalysis(cacheKey, result);
+        await recordQualityEvent("analysis.completed", {
+          provider: "lmstudio",
+          finalScore: result.finalScore,
+          confidenceScore: result.confidenceScore,
+          uncertaintyFlags: result.uncertaintyFlags?.length || 0,
+          missingMustHaveCount: countMissingMustHaves(result),
+        });
         return res.json(result);
       } catch (error: any) {
         console.error("LM Studio analysis error:", error.response?.data || error.message);
-        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Local AI enhancement failed; deterministic ATS score was still completed." };
+        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Local AI enhancement failed; evidence-based fit analysis still completed." };
         rememberAnalysis(cacheKey, result);
+        await recordQualityEvent("analysis.fallback", {
+          provider: "lmstudio",
+          reason: "ai_enhancement_failed",
+          finalScore: result.finalScore,
+          confidenceScore: result.confidenceScore,
+        });
         return res.json(result);
       }
     }
 
     if (provider === "huggingface" || provider === "hf" || provider === "huggingface-router") {
       try {
-        const result = await analyzeWithHuggingFaceRouter(resumeText, jobDescription);
+        const result = await analyzeWithHuggingFaceRouter(resumeText, jobDescription, deterministic);
         rememberAnalysis(cacheKey, result);
+        await recordQualityEvent("analysis.completed", {
+          provider: result.provider || "huggingface-router",
+          finalScore: result.finalScore,
+          confidenceScore: result.confidenceScore,
+          uncertaintyFlags: result.uncertaintyFlags?.length || 0,
+          missingMustHaveCount: countMissingMustHaves(result),
+        });
         return res.json(result);
       } catch (error: any) {
         console.error("Hugging Face router analysis error:", error.response?.data || error.message);
-        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Hugging Face enhancement failed; deterministic ATS score was still completed." };
+        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Hugging Face enhancement failed; evidence-based fit analysis still completed." };
         rememberAnalysis(cacheKey, result);
+        await recordQualityEvent("analysis.fallback", {
+          provider: "huggingface-router",
+          reason: "ai_enhancement_failed",
+          finalScore: result.finalScore,
+          confidenceScore: result.confidenceScore,
+        });
         return res.json(result);
       }
     }
@@ -1212,7 +1379,7 @@ async function startServer() {
     }
 
     try {
-      const prompt = buildPrompt(resumeText, jobDescription);
+      const prompt = buildExplanationPrompt(resumeText, jobDescription, deterministic);
 
       const response = await axios.post(
         "https://api-inference.huggingface.co/models/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
@@ -1230,17 +1397,36 @@ async function startServer() {
       try {
         const result = mergeDeterministicTruth(deterministic, parseAnalysisJson(text), "huggingface-inference-api", "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B");
         rememberAnalysis(cacheKey, result);
+        await recordQualityEvent("analysis.completed", {
+          provider: "huggingface-inference-api",
+          finalScore: result.finalScore,
+          confidenceScore: result.confidenceScore,
+          uncertaintyFlags: result.uncertaintyFlags?.length || 0,
+          missingMustHaveCount: countMissingMustHaves(result),
+        });
         res.json(result);
       } catch (parseError) {
-        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "AI response parse failed; deterministic ATS score was still completed." };
+        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "AI response parse failed; evidence-based fit analysis still completed." };
         rememberAnalysis(cacheKey, result);
+        await recordQualityEvent("analysis.fallback", {
+          provider: "huggingface-inference-api",
+          reason: "response_parse_failed",
+          finalScore: result.finalScore,
+          confidenceScore: result.confidenceScore,
+        });
         res.json(result);
       }
 
     } catch (error: any) {
       console.error("HF Analysis error:", error.response?.data || error.message);
-      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "AI analysis failed; deterministic ATS score was still completed." };
+      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "AI analysis failed; evidence-based fit analysis still completed." };
       rememberAnalysis(cacheKey, result);
+      await recordQualityEvent("analysis.fallback", {
+        provider: "huggingface-inference-api",
+        reason: "ai_analysis_failed",
+        finalScore: result.finalScore,
+        confidenceScore: result.confidenceScore,
+      });
       res.json(result);
     }
   });
@@ -1260,15 +1446,15 @@ async function startServer() {
       return res.json({ ...cached, cached: true });
     }
 
-    const deterministic = await buildDeterministicAnalysis(resumeText, jobDescription);
+    const deterministic = buildEvidenceBasedAnalysis(resumeText, jobDescription);
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Gemini key is not configured; deterministic ATS score was still completed." };
+      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Gemini key is not configured; evidence-based fit analysis still completed." };
       rememberAnalysis(cacheKey, result);
       return res.json(result);
     }
     try {
-      const prompt = buildPrompt(resumeText, jobDescription);
+      const prompt = buildExplanationPrompt(resumeText, jobDescription, deterministic);
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
@@ -1278,16 +1464,26 @@ async function startServer() {
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              matchScore: { type: Type.NUMBER },
               profileSummary: { type: Type.STRING },
-              missingKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-              matchedKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-              strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-              weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
-              recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
-              atsVisibilityScore: { type: Type.NUMBER },
-              jobFitDecision: { type: Type.STRING },
               tailoredBio: { type: Type.STRING },
+              candidateRecommendations: {
+                type: Type.OBJECT,
+                properties: {
+                  wordingFixes: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  proofGaps: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  likelyInterviewQuestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  titleAlignmentSuggestions: { type: Type.ARRAY, items: { type: Type.STRING } }
+                }
+              },
+              recruiterRecommendations: {
+                type: Type.OBJECT,
+                properties: {
+                  verifyManually: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  weakEvidenceZones: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  interviewProbes: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  possibleFalseNegatives: { type: Type.ARRAY, items: { type: Type.STRING } }
+                }
+              },
               bulletPointOptimization: {
                 type: Type.ARRAY,
                 items: {
@@ -1305,11 +1501,24 @@ async function startServer() {
       });
       const result = mergeDeterministicTruth(deterministic, JSON.parse(response.text || "{}"), "gemini", "gemini-3-flash-preview");
       rememberAnalysis(cacheKey, result);
+      await recordQualityEvent("analysis.completed", {
+        provider: "gemini",
+        finalScore: result.finalScore,
+        confidenceScore: result.confidenceScore,
+        uncertaintyFlags: result.uncertaintyFlags?.length || 0,
+        missingMustHaveCount: countMissingMustHaves(result),
+      });
       res.json(result);
     } catch (error: any) {
       console.error("Gemini analysis error:", error.message);
-      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Gemini enhancement failed; deterministic ATS score was still completed." };
+      const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Gemini enhancement failed; evidence-based fit analysis still completed." };
       rememberAnalysis(cacheKey, result);
+      await recordQualityEvent("analysis.fallback", {
+        provider: "gemini",
+        reason: "ai_enhancement_failed",
+        finalScore: result.finalScore,
+        confidenceScore: result.confidenceScore,
+      });
       res.json(result);
     }
   });

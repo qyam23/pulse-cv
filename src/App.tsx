@@ -3,222 +3,708 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { 
-  FileText, 
-  Search, 
-  CheckCircle2, 
-  AlertCircle, 
-  Zap, 
-  ArrowRight, 
-  RefreshCcw, 
-  BarChart3, 
-  Target,
-  Terminal,
-  Sparkles,
-  UploadCloud,
-  Loader2,
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  BadgeCheck,
+  BookOpen,
+  BrainCircuit,
+  BriefcaseBusiness,
+  CheckCircle2,
+  ChevronRight,
   Crown,
-  MessageSquare,
+  Database,
+  Factory,
+  FileSearch,
+  FileText,
+  Globe,
+  Layers3,
   LayoutGrid,
-  TrendingUp,
-  ShieldCheck,
-  Smartphone,
-  MousePointer2,
+  Loader2,
+  MapPinned,
   Menu,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Target,
+  UploadCloud,
   X,
-  Globe
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import * as pdfjs from 'pdfjs-dist';
-import mammoth from 'mammoth';
+} from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import * as pdfjs from "pdfjs-dist";
+import mammoth from "mammoth";
 
-// Initialize PDF Worker correctly for version 4.10.38
-// We use the .mjs version because modern pdfjs-dist often uses dynamic import()
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`;
 
+type MatchState = "matched" | "partially_matched" | "weakly_supported" | "missing" | "uncertain";
+type SupportLevel = "explicit" | "strong_partial" | "weak_partial" | "implied" | "missing" | "unclear";
+
+interface DomainDetection {
+  primaryDomain: string;
+  secondaryDomain: string | null;
+  roleFamily: string;
+  seniority: string;
+  confidence: number;
+  signals: string[];
+}
+
+interface Requirement {
+  id: string;
+  label: string;
+  normalizedValue: string;
+  type: string;
+  subtype: string;
+  sourceText: string;
+  sourceSpanStart: number;
+  sourceSpanEnd: number;
+  domain: string;
+  importance: number;
+  requirementStrength: number;
+  senioritySignal: string | null;
+  mustHave: boolean;
+  confidence: number;
+}
+
+interface Evidence {
+  supportLevel: SupportLevel;
+  confidence: number;
+  cvSourceText: string;
+  rationale: string;
+  matchedAlias: string | null;
+  quantifiedImpactPresent: boolean;
+}
+
+interface RequirementMatch {
+  requirement: Requirement;
+  evidence: Evidence[];
+  state: MatchState;
+  topEvidence: Evidence | null;
+  confidence: number;
+  rationale: string;
+}
+
+interface JDQualityWarning {
+  id: string;
+  severity: "info" | "warning" | "high_risk";
+  title: string;
+  message: string;
+  affectedRequirementIds: string[];
+}
+
+interface ScoringBreakdown {
+  roleFitScore: number;
+  domainFitScore: number;
+  hardSkillsFitScore: number;
+  toolsFitScore: number;
+  leadershipFitScore: number;
+  mustHaveCoverage: number;
+  evidenceStrengthScore: number;
+  confidenceScore: number;
+  uncertaintyPenalty: number;
+  finalScore: number;
+}
+
+interface EvidenceMapRow {
+  requirementId: string;
+  requirement: string;
+  category: string;
+  importance: number;
+  supportLevel: SupportLevel;
+  matchState: MatchState;
+  confidence: number;
+  jdEvidence: string;
+  cvEvidence: string;
+  rationale: string;
+  mustHave: boolean;
+}
+
+interface RecommendationBlock {
+  wordingFixes: string[];
+  proofGaps: string[];
+  likelyInterviewQuestions: string[];
+  titleAlignmentSuggestions: string[];
+}
+
+interface RecruiterRecommendationBlock {
+  verifyManually: string[];
+  weakEvidenceZones: string[];
+  interviewProbes: string[];
+  possibleFalseNegatives: string[];
+}
+
 interface AnalysisResult {
-  matchScore: number;
+  domainDetection: DomainDetection;
+  jdRequirementsByType: Record<string, Requirement[]>;
+  matchedEvidenceByType: Record<string, RequirementMatch[]>;
+  missingRequirementsByType: Record<string, RequirementMatch[]>;
+  uncertaintyFlags: string[];
+  scoringBreakdown: ScoringBreakdown;
+  finalScore: number;
+  confidenceScore: number;
+  jdQualityWarnings: JDQualityWarning[];
+  candidateRecommendations: RecommendationBlock;
+  recruiterRecommendations: RecruiterRecommendationBlock;
+  evidenceMap: EvidenceMapRow[];
+  analysisMeta: {
+    version: string;
+    analysisMode: string;
+    vertical: string;
+    generatedAt: string;
+    inputHash: string;
+  };
   profileSummary: string;
-  missingKeywords: string[];
-  matchedKeywords?: string[];
-  strengths: string[];
-  weaknesses: string[];
-  recommendations: string[];
-  atsVisibilityScore: number;
-  jobFitDecision: 'High' | 'Medium' | 'Low';
   tailoredBio: string;
   bulletPointOptimization: {
     original: string;
     optimized: string;
     rationale: string;
   }[];
-  scoringMode?: string;
-  scoreLocked?: boolean;
-  cached?: boolean;
+  matchedKeywords: string[];
+  missingKeywords: string[];
+  matchScore: number;
+  atsVisibilityScore: number;
+  jobFitDecision: "High" | "Medium" | "Low";
+  strengths: string[];
+  weaknesses: string[];
+  recommendations: string[];
+  scoringMode: string;
+  scoreLocked: boolean;
+  candidateViewMode: "free" | "premium_preview";
   aiWarning?: string;
+  cached?: boolean;
 }
 
-type UpsellVariant = 'low' | 'medium' | 'high';
+interface ParsePreview {
+  domainDetection?: DomainDetection;
+  jdRequirementsByType?: Record<string, Requirement[]>;
+  jdQualityWarnings?: JDQualityWarning[];
+}
 
+const LIVE_ANALYZER_URL = "https://qyam23-pulse-cv.hf.space/";
 const isStaticPagesRuntime =
-  (import.meta as any).env?.VITE_STATIC_PREVIEW === 'true' ||
-  typeof window !== 'undefined' &&
-  window.location.hostname.endsWith('github.io');
+  (import.meta as any).env?.VITE_STATIC_PREVIEW === "true" ||
+  (typeof window !== "undefined" && window.location.hostname.endsWith("github.io"));
 
-const LIVE_ANALYZER_URL = 'https://qyam23-pulse-cv.hf.space/';
+const STAGES = [
+  "Validating inputs",
+  "Cleaning and normalizing JD",
+  "Detecting industrial domain signals",
+  "Extracting typed requirements",
+  "Finding CV evidence",
+  "Scoring must-haves and confidence",
+  "Drafting explanations",
+  "Preparing evidence map",
+];
 
 function isRTL(text: string): boolean {
-  return /[\u0590-\u05FF\u0600-\u06FF]/.test(text);
+  return /[\u0590-\u05FF]/.test(text);
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function buildStaticPreviewAnalysis(resumeText: string, jobDescription: string): AnalysisResult {
-  const normalize = (value: string) => value.toLowerCase();
-  const resume = normalize(resumeText);
-  const jdWords = Array.from(
-    new Set(
-      jobDescription
-        .split(/[\s,.;:()\/|\-]+/)
-        .map((word) => word.replace(/[^\w\u0590-\u05FF]/g, '').trim())
-        .filter((word) => word.length > 3)
-    )
-  ).slice(0, 40);
+  const jd = normalizeText(jobDescription);
+  const resume = normalizeText(resumeText);
+  const role = /factory engineer|מהנדס\/ת מפעל|מהנדס מפעל/i.test(jobDescription)
+    ? "Factory Engineer"
+    : /manufacturing engineer/i.test(jobDescription)
+      ? "Manufacturing Engineer"
+      : "Industrial Manufacturing Role";
 
-  const found = jdWords.filter((word) => resume.includes(word.toLowerCase())).slice(0, 12);
-  const missing = jdWords.filter((word) => !resume.includes(word.toLowerCase())).slice(0, 12);
-  const score = Math.max(35, Math.min(82, Math.round((found.length / Math.max(jdWords.length, 1)) * 100 + 35)));
-  const rtl = isRTL(`${resumeText} ${jobDescription}`);
+  const phrases = [
+    { label: "Continuous Improvement", aliases: ["continuous improvement", "שיפור רציף"], category: "Hard Skills" },
+    { label: "Mechanical Engineering", aliases: ["mechanical engineering", "הנדסת מכונות"], category: "Education" },
+    { label: "Electrical Engineering", aliases: ["electrical engineering", "הנדסת חשמל"], category: "Education" },
+    { label: "AutoCAD", aliases: ["autocad"], category: "Tools / Systems" },
+    { label: "SolidWorks", aliases: ["solidworks"], category: "Tools / Systems" },
+    { label: "Manufacturing Processes", aliases: ["manufacturing processes", "תהליכי ייצור"], category: "Manufacturing / Domain" },
+    { label: "Safety", aliases: ["safety", "בטיחות"], category: "Manufacturing / Domain" },
+    { label: "Quality", aliases: ["quality", "איכות"], category: "Manufacturing / Domain" },
+    { label: "Employee Management", aliases: ["ניהול עובדים", "team leadership", "lead teams"], category: "Leadership" },
+  ];
+
+  const matched = phrases.filter((phrase) => phrase.aliases.some((alias) => resume.includes(alias)));
+  const missing = phrases.filter((phrase) => !phrase.aliases.some((alias) => resume.includes(alias)));
+  const finalScore = Math.round(42 + (matched.length / Math.max(phrases.length, 1)) * 40);
+  const confidence = 74;
+
+  const evidenceMap = phrases.map((phrase, index) => {
+    const found = matched.some((item) => item.label === phrase.label);
+    return {
+      requirementId: `preview-${index}`,
+      requirement: phrase.label,
+      category: phrase.category,
+      importance: found ? 0.78 : 0.9,
+      supportLevel: found ? "strong_partial" : "missing",
+      matchState: found ? "partially_matched" : "missing",
+      confidence: found ? 0.76 : 0.82,
+      jdEvidence: phrase.label,
+      cvEvidence: found ? `Found related signal for ${phrase.label} in the resume preview.` : "No direct evidence found in static preview mode.",
+      rationale: found
+        ? `The static preview found a close evidence signal for ${phrase.label}.`
+        : `${phrase.label} appears in the JD preview but not in the resume preview.`,
+      mustHave: !["Safety", "Quality"].includes(phrase.label),
+    } as EvidenceMapRow;
+  });
+
+  const matchedMap: RequirementMatch[] = matched.map((phrase, index) => ({
+    requirement: {
+      id: `match-${index}`,
+      label: phrase.label,
+      normalizedValue: phrase.label,
+      type: phrase.category === "Tools / Systems" ? "tool_system" : phrase.category === "Leadership" ? "leadership_responsibility" : "hard_skill",
+      subtype: "preview",
+      sourceText: phrase.label,
+      sourceSpanStart: 0,
+      sourceSpanEnd: phrase.label.length,
+      domain: "manufacturing",
+      importance: 0.8,
+      requirementStrength: 0.8,
+      senioritySignal: null,
+      mustHave: true,
+      confidence: 0.82,
+    },
+    evidence: [{
+      supportLevel: "strong_partial",
+      confidence: 0.76,
+      cvSourceText: phrase.label,
+      rationale: `Static preview found related evidence for ${phrase.label}.`,
+      matchedAlias: phrase.label,
+      quantifiedImpactPresent: false,
+    }],
+    state: "partially_matched",
+    topEvidence: {
+      supportLevel: "strong_partial",
+      confidence: 0.76,
+      cvSourceText: phrase.label,
+      rationale: `Static preview found related evidence for ${phrase.label}.`,
+      matchedAlias: phrase.label,
+      quantifiedImpactPresent: false,
+    },
+    confidence: 0.76,
+    rationale: `Static preview found related evidence for ${phrase.label}.`,
+  }));
+
+  const missingMap: RequirementMatch[] = missing.map((phrase, index) => ({
+    requirement: {
+      id: `missing-${index}`,
+      label: phrase.label,
+      normalizedValue: phrase.label,
+      type: phrase.category === "Tools / Systems" ? "tool_system" : phrase.category === "Leadership" ? "leadership_responsibility" : "hard_skill",
+      subtype: "preview",
+      sourceText: phrase.label,
+      sourceSpanStart: 0,
+      sourceSpanEnd: phrase.label.length,
+      domain: "manufacturing",
+      importance: 0.9,
+      requirementStrength: 0.9,
+      senioritySignal: null,
+      mustHave: true,
+      confidence: 0.88,
+    },
+    evidence: [{
+      supportLevel: "missing",
+      confidence: 0.82,
+      cvSourceText: "",
+      rationale: `No direct proof was found for ${phrase.label} in the static preview.`,
+      matchedAlias: null,
+      quantifiedImpactPresent: false,
+    }],
+    state: "missing",
+    topEvidence: {
+      supportLevel: "missing",
+      confidence: 0.82,
+      cvSourceText: "",
+      rationale: `No direct proof was found for ${phrase.label} in the static preview.`,
+      matchedAlias: null,
+      quantifiedImpactPresent: false,
+    },
+    confidence: 0.82,
+    rationale: `No direct proof was found for ${phrase.label} in the static preview.`,
+  }));
 
   return {
-    matchScore: score,
-    atsVisibilityScore: Math.max(30, Math.min(85, score - 5)),
-    jobFitDecision: score >= 75 ? 'High' : score >= 55 ? 'Medium' : 'Low',
-    matchedKeywords: found,
-    missingKeywords: missing,
-    strengths: found.slice(0, 4),
-    weaknesses: missing.slice(0, 4),
-    recommendations: missing.slice(0, 5).map((keyword) => rtl ? `חזקו בקורות החיים ראיה אמיתית ל-${keyword}` : `Add truthful evidence for ${keyword}`),
-    profileSummary: rtl
-      ? 'זהו מצב תצוגה סטטי של GitHub Pages. הדוח מבצע בדיקת מילות מפתח בסיסית בדפדפן בלבד. לניתוח AI מלא עם Hugging Face, פתחו את גרסת Hugging Face Space.'
-      : 'This is GitHub Pages static preview mode. The report runs a lightweight browser-only keyword check. For full AI analysis with Hugging Face, open the live Hugging Face Space.',
-    tailoredBio: rtl
-      ? 'תצוגת דמו: שפרו את קורות החיים סביב מילות המפתח החסרות, בלי להמציא ניסיון שלא קיים.'
-      : 'Demo preview: strengthen the resume around missing role keywords without inventing experience.',
-    bulletPointOptimization: missing.slice(0, 3).map((keyword) => ({
-      original: rtl ? `אין ראיה ברורה ל-${keyword}` : `No clear evidence for ${keyword}`,
-      optimized: rtl ? `אם זה נכון: הוסיפו הישג או פרויקט שמדגים ${keyword}` : `If accurate: add a project or achievement that demonstrates ${keyword}`,
-      rationale: rtl ? 'GitHub Pages אינו מפעיל backend. זהו ניסוח דמו בלבד.' : 'GitHub Pages does not run the backend. This is preview-only guidance.',
+    domainDetection: {
+      primaryDomain: jd.includes("manufacturing") || jd.includes("ייצור") ? "manufacturing" : "industrial",
+      secondaryDomain: jd.includes("quality") || jd.includes("איכות") ? "quality" : null,
+      roleFamily: role,
+      seniority: /manager|lead|מנהל/.test(jobDescription) ? "leadership" : "individual_contributor",
+      confidence: 0.78,
+      signals: matched.map((item) => item.label).slice(0, 6),
+    },
+    jdRequirementsByType: {
+      Role: [{
+        id: "role-preview",
+        label: role,
+        normalizedValue: role,
+        type: "role_title",
+        subtype: "preview",
+        sourceText: role,
+        sourceSpanStart: 0,
+        sourceSpanEnd: role.length,
+        domain: "manufacturing",
+        importance: 0.95,
+        requirementStrength: 0.95,
+        senioritySignal: null,
+        mustHave: true,
+        confidence: 0.85,
+      }],
+      "Hard Skills": missingMap.filter((item) => item.requirement.type === "hard_skill").map((item) => item.requirement),
+      "Tools / Systems": phrases.filter((phrase) => phrase.category === "Tools / Systems").map((phrase, index) => ({
+        id: `tool-preview-${index}`,
+        label: phrase.label,
+        normalizedValue: phrase.label,
+        type: "tool_system",
+        subtype: "preview",
+        sourceText: phrase.label,
+        sourceSpanStart: 0,
+        sourceSpanEnd: phrase.label.length,
+        domain: "manufacturing",
+        importance: 0.86,
+        requirementStrength: 0.84,
+        senioritySignal: null,
+        mustHave: true,
+        confidence: 0.78,
+      })),
+    },
+    matchedEvidenceByType: {
+      "Matched / Partial": matchedMap,
+    },
+    missingRequirementsByType: {
+      "Missing / Needs proof": missingMap,
+    },
+    uncertaintyFlags: ["Static Pages preview uses a lightweight browser-only fit preview. Open the live analyzer for the full evidence engine."],
+    scoringBreakdown: {
+      roleFitScore: finalScore + 2,
+      domainFitScore: finalScore - 3,
+      hardSkillsFitScore: finalScore - 4,
+      toolsFitScore: finalScore + 1,
+      leadershipFitScore: finalScore - 6,
+      mustHaveCoverage: Math.max(40, finalScore - 2),
+      evidenceStrengthScore: 58,
+      confidenceScore: confidence,
+      uncertaintyPenalty: 16,
+      finalScore,
+    },
+    finalScore,
+    confidenceScore: confidence,
+    jdQualityWarnings: [
+      {
+        id: "static-preview-warning",
+        severity: "info",
+        title: "Static preview mode",
+        message: "GitHub Pages does not run the full server-side extraction pipeline. Treat this as a trust-first preview rather than a full analysis.",
+        affectedRequirementIds: [],
+      },
+    ],
+    candidateRecommendations: {
+      wordingFixes: ["Use the live analyzer to see full evidence-backed wording fixes."],
+      proofGaps: missing.slice(0, 3).map((item) => `Add real proof for ${item.label} if you truly have it.`),
+      likelyInterviewQuestions: ["Which manufacturing processes have you improved directly, and what changed?"],
+      titleAlignmentSuggestions: [`Align your title and summary to ${role} if that reflects your real scope.`],
+    },
+    recruiterRecommendations: {
+      verifyManually: ["Open the live analyzer for the full recruiter-grade evidence map."],
+      weakEvidenceZones: missing.slice(0, 2).map((item) => `${item.label}: no direct proof in static preview.`),
+      interviewProbes: ["Ask for one recent example proving process ownership."],
+      possibleFalseNegatives: ["Static preview may miss nuanced evidence that the live analyzer can map."],
+    },
+    evidenceMap,
+    analysisMeta: {
+      version: "static-preview-evidence-v1",
+      analysisMode: "static_preview",
+      vertical: "manufacturing",
+      generatedAt: new Date().toISOString(),
+      inputHash: `${resumeText.length}-${jobDescription.length}`,
+    },
+    profileSummary: "This preview highlights fit as evidence and proof strength, not as a flat keyword score.",
+    tailoredBio: "Candidate-first evidence preview: show what your CV truly proves, what is still missing, and what is only a wording issue.",
+    bulletPointOptimization: missing.slice(0, 2).map((item) => ({
+      original: `No direct proof for ${item.label}.`,
+      optimized: `If this is true, add a result-driven bullet showing where you used ${item.label}.`,
+      rationale: "Static preview provides a light wording hint only.",
     })),
+    matchedKeywords: matched.map((item) => item.label),
+    missingKeywords: missing.map((item) => item.label),
+    matchScore: finalScore,
+    atsVisibilityScore: Math.round((finalScore + confidence) / 2),
+    jobFitDecision: finalScore >= 78 ? "High" : finalScore >= 55 ? "Medium" : "Low",
+    strengths: matched.slice(0, 4).map((item) => item.label),
+    weaknesses: missing.slice(0, 4).map((item) => item.label),
+    recommendations: missing.slice(0, 4).map((item) => `Prove ${item.label} with a recent, concrete example.`),
+    scoringMode: "static-preview",
+    scoreLocked: false,
+    candidateViewMode: "free",
   };
 }
 
 async function readApiError(response: Response): Promise<string> {
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
     const errorData = await response.json();
     return errorData.message || errorData.error || "Analysis failed.";
   }
-
   const text = await response.text();
-  if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
-    return "The AI backend is not available in this static GitHub Pages preview. Open the live Hugging Face analyzer, or use the local backend.";
+  if (text.trim().startsWith("<!DOCTYPE") || text.trim().startsWith("<html")) {
+    return "The live backend is unavailable right now. Please try again in a moment.";
   }
-
   return text || "Analysis failed.";
 }
 
+function badgeClasses(state: MatchState) {
+  switch (state) {
+    case "matched":
+      return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    case "partially_matched":
+      return "bg-indigo-50 text-indigo-700 border-indigo-200";
+    case "weakly_supported":
+      return "bg-amber-50 text-amber-700 border-amber-200";
+    case "uncertain":
+      return "bg-slate-100 text-slate-700 border-slate-200";
+    default:
+      return "bg-rose-50 text-rose-700 border-rose-200";
+  }
+}
+
+function scoreTone(score: number): { label: string; className: string } {
+  if (score >= 80) return { label: "High confidence fit", className: "bg-emerald-500 text-white" };
+  if (score >= 60) return { label: "Selective fit", className: "bg-amber-400 text-slate-900" };
+  return { label: "High review needed", className: "bg-rose-500 text-white" };
+}
+
+function groupEntries<T>(value: Record<string, T[]> | undefined): [string, T[]][] {
+  return (value ? Object.entries(value).filter(([, list]) => list?.length) : []) as [string, T[]][];
+}
+
+function useAnimatedStages(active: boolean) {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setIndex(0);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setIndex((current) => (current + 1) % STAGES.length);
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return index;
+}
+
+function Badge({ state }: { state: MatchState }) {
+  const labels: Record<MatchState, string> = {
+    matched: "Matched",
+    partially_matched: "Partial",
+    weakly_supported: "Weak Evidence",
+    missing: "Missing",
+    uncertain: "Uncertain",
+  };
+  return (
+    <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-black uppercase tracking-[0.18em] ${badgeClasses(state)}`}>
+      {labels[state]}
+    </span>
+  );
+}
+
+function SectionHeader({ icon: Icon, title, subtitle }: { icon: React.ComponentType<any>; title: string; subtitle?: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+          <Icon className="h-5 w-5" />
+        </div>
+        <div>
+          <h3 className="text-xl font-black tracking-tight text-slate-900">{title}</h3>
+          {subtitle ? <p className="mt-1 text-sm leading-relaxed text-slate-500">{subtitle}</p> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RequirementGroup({ title, items }: { title: string; items: RequirementMatch[] }) {
+  return (
+    <div className="rounded-[2rem] border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="mb-5 flex items-center justify-between gap-4">
+        <h4 className="text-sm font-black uppercase tracking-[0.22em] text-slate-400">{title}</h4>
+        <span className="text-xs font-bold text-slate-400">{items.length} requirements</span>
+      </div>
+      <div className="space-y-4">
+        {items.map((item) => (
+          <div key={item.requirement.id} className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-bold text-slate-900">{item.requirement.label}</p>
+                  {item.requirement.mustHave ? (
+                    <span className="inline-flex items-center rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-white">
+                      Must-Have
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-2 text-sm leading-relaxed text-slate-500">{item.rationale}</p>
+                {item.topEvidence?.cvSourceText ? (
+                  <div className="mt-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+                    <div className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">CV evidence</div>
+                    {item.topEvidence.cvSourceText}
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-2">
+                <Badge state={item.state} />
+                <span className="text-xs font-bold text-slate-400">confidence {Math.round(item.confidence * 100)}%</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EvidenceMap({ rows }: { rows: EvidenceMapRow[] }) {
+  return (
+    <div className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 px-6 py-5">
+        <SectionHeader
+          icon={MapPinned}
+          title="Evidence Map"
+          subtitle="Every requirement is anchored to what the JD asked for and what the CV truly proves."
+        />
+      </div>
+      <div className="hidden lg:block">
+        <div className="grid grid-cols-[1.35fr_0.8fr_0.8fr_0.8fr_1.3fr] gap-4 border-b border-slate-100 px-6 py-4 text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">
+          <span>Requirement</span>
+          <span>Status</span>
+          <span>Confidence</span>
+          <span>Importance</span>
+          <span>CV Evidence</span>
+        </div>
+        {rows.map((row) => (
+          <div key={row.requirementId} className="grid grid-cols-[1.35fr_0.8fr_0.8fr_0.8fr_1.3fr] gap-4 border-b border-slate-50 px-6 py-5 last:border-b-0">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-bold text-slate-900">{row.requirement}</span>
+                {row.mustHave ? (
+                  <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-white">
+                    Must-Have
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-1 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{row.category}</p>
+              <p className="mt-3 text-sm leading-relaxed text-slate-500">{row.rationale}</p>
+            </div>
+            <div className="pt-1">
+              <Badge state={row.matchState} />
+            </div>
+            <div className="pt-2 text-sm font-bold text-slate-700">{Math.round(row.confidence * 100)}%</div>
+            <div className="pt-2 text-sm font-bold text-slate-700">{Math.round(row.importance * 100)}%</div>
+            <div className="text-sm leading-relaxed text-slate-600">{row.cvEvidence}</div>
+          </div>
+        ))}
+      </div>
+      <div className="space-y-4 p-5 lg:hidden">
+        {rows.map((row) => (
+          <div key={row.requirementId} className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="font-bold text-slate-900">{row.requirement}</p>
+              <Badge state={row.matchState} />
+            </div>
+            <p className="mt-2 text-xs font-black uppercase tracking-[0.18em] text-slate-400">{row.category}</p>
+            <p className="mt-3 text-sm leading-relaxed text-slate-500">{row.rationale}</p>
+            <div className="mt-4 grid gap-3 rounded-2xl bg-white p-4 text-sm text-slate-600">
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">CV evidence</div>
+                {row.cvEvidence}
+              </div>
+              <div className="flex gap-5 text-xs font-bold text-slate-500">
+                <span>confidence {Math.round(row.confidence * 100)}%</span>
+                <span>importance {Math.round(row.importance * 100)}%</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LoadingOverlay({ stageIndex }: { stageIndex: number }) {
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 px-6"
+      >
+        <div className="w-full max-w-3xl rounded-[2.8rem] border border-white/10 bg-slate-900/90 p-8 shadow-2xl shadow-black/40 md:p-12">
+          <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-[2rem] bg-indigo-500/15 text-indigo-300">
+            <Loader2 className="h-10 w-10 animate-spin" />
+          </div>
+          <div className="mt-8 text-center">
+            <p className="text-xs font-black uppercase tracking-[0.28em] text-indigo-300">Evidence-Based Hiring Intelligence</p>
+            <h2 className="mt-4 text-3xl font-black tracking-tight text-white md:text-4xl">Building an auditable fit report</h2>
+            <p className="mt-4 text-base leading-relaxed text-slate-300">
+              We are separating the JD into typed requirements, mapping real CV evidence, scoring must-haves, and preparing the evidence map.
+            </p>
+          </div>
+          <div className="mt-10 space-y-3">
+            {STAGES.map((stage, index) => {
+              const active = index === stageIndex;
+              const completed = index < stageIndex;
+              return (
+                <div key={stage} className={`flex items-center gap-4 rounded-2xl border px-4 py-3 transition-all ${active ? "border-indigo-400/50 bg-indigo-500/10 text-white" : completed ? "border-emerald-400/20 bg-emerald-500/10 text-emerald-200" : "border-white/10 bg-white/5 text-slate-400"}`}>
+                  {completed ? <CheckCircle2 className="h-4 w-4" /> : active ? <Loader2 className="h-4 w-4 animate-spin" /> : <div className="h-2.5 w-2.5 rounded-full bg-current opacity-70" />}
+                  <span className="text-sm font-semibold">{stage}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 export default function App() {
-  const [resumeText, setResumeText] = useState('');
-  const [jobDescription, setJobDescription] = useState('');
-  const [jobUrl, setJobUrl] = useState('');
+  const [resumeText, setResumeText] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [jobUrl, setJobUrl] = useState("");
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [parsePreview, setParsePreview] = useState<ParsePreview | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isReadingFile, setIsReadingFile] = useState(false);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [isPreviewingJd, setIsPreviewingJd] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showUpsell, setShowUpsell] = useState(false);
-  const [upsellVariant, setUpsellVariant] = useState<UpsellVariant>('medium');
-  const [copyBioLabel, setCopyBioLabel] = useState('Copy Optimized Bio');
+  const [copyBioLabel, setCopyBioLabel] = useState("Copy evidence-based bio");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [extractedKeywords, setExtractedKeywords] = useState<string[]>([]);
-  const [currentScanWord, setCurrentScanWord] = useState('');
+  const [activePersona, setActivePersona] = useState<"candidate" | "recruiter" | "manager">("candidate");
   const inputRef = useRef<HTMLDivElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
+  const stageIndex = useAnimatedStages(isAnalyzing);
+
+  const rtl = useMemo(() => isRTL(`${resumeText} ${jobDescription}`), [resumeText, jobDescription]);
 
   const scrollToInputs = useCallback(() => {
-    inputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
-
-  const revealUpsell = useCallback((analysis: AnalysisResult) => {
-    if (analysis.matchScore < 55) setUpsellVariant('low');
-    else if (analysis.matchScore < 80) setUpsellVariant('medium');
-    else setUpsellVariant('high');
-    setShowUpsell(true);
+    inputRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
   const finishAnalysis = useCallback((analysis: AnalysisResult) => {
     setResult(analysis);
-    revealUpsell(analysis);
-    setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
-  }, [revealUpsell]);
+    setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+  }, []);
 
-  const copyOptimizedBio = useCallback(async () => {
+  const copyBio = useCallback(async () => {
     if (!result?.tailoredBio) return;
     await navigator.clipboard.writeText(result.tailoredBio);
-    setCopyBioLabel('Copied ✓');
-    setTimeout(() => setCopyBioLabel('Copy Optimized Bio'), 2000);
+    setCopyBioLabel("Copied");
+    setTimeout(() => setCopyBioLabel("Copy evidence-based bio"), 1800);
   }, [result]);
-
-  const presentKeywords = result?.matchedKeywords?.length
-    ? result.matchedKeywords
-    : extractedKeywords.filter((word) => !result?.missingKeywords?.some((missing) => missing.toLowerCase() === word.toLowerCase())).slice(0, 10);
-
-  const upsellCopy = {
-    low: {
-      className: 'bg-rose-600 border-rose-400/30 shadow-[0_20px_50px_rgba(225,29,72,0.24)]',
-      headline: 'Your resume needs a serious positioning reset.',
-      subtext: 'The match score is low. A professional rebuild can help you close the gaps without inventing experience.',
-      cta: 'Get Expert Resume Help',
-    },
-    medium: {
-      className: 'bg-indigo-600 border-indigo-400/30 shadow-[0_20px_50px_rgba(79,70,229,0.3)]',
-      headline: "You're close. Let's get you over the line.",
-      subtext: 'The profile has usable signals, but the language needs sharper ATS alignment and stronger recruiter search coverage.',
-      cta: 'Upgrade My Resume',
-    },
-    high: {
-      className: 'bg-emerald-600 border-emerald-400/30 shadow-[0_20px_50px_rgba(5,150,105,0.24)]',
-      headline: 'Strong match. Prepare to convert the interview.',
-      subtext: 'Your resume is competitive for this role. Now focus on interview positioning, proof stories, and role-specific answers.',
-      cta: 'Build Interview Plan',
-    },
-  }[upsellVariant];
-
-  // Extract interesting keywords for the scanning animation
-  const extractScanWords = useCallback(() => {
-    const combined = `${resumeText} ${jobDescription}`;
-    const words = combined
-      .split(/[\s,.]+/)
-      .filter(w => w.length > 4 && !/^(https?|www|mailto)/i.test(w))
-      .map(w => w.replace(/[^\w\u0590-\u05FF]/g, ''))
-      .filter(w => w.length > 2);
-    
-    // Get unique and shuffle
-    const unique = Array.from(new Set(words));
-    return unique.sort(() => Math.random() - 0.5).slice(0, 20);
-  }, [resumeText, jobDescription]);
-
-  useEffect(() => {
-    let interval: any;
-    if (isAnalyzing && extractedKeywords.length > 0) {
-      let i = 0;
-      interval = setInterval(() => {
-        setCurrentScanWord(extractedKeywords[i % extractedKeywords.length]);
-        i++;
-      }, 800);
-    }
-    return () => clearInterval(interval);
-  }, [isAnalyzing, extractedKeywords]);
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -226,77 +712,99 @@ export default function App() {
 
     setIsReadingFile(true);
     setError(null);
-
     try {
-      if (file.type === 'application/pdf') {
+      if (file.type === "application/pdf") {
         const arrayBuffer = await file.arrayBuffer();
-        const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
-        const pdf = await loadingTask.promise;
+        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
         let fullText = "";
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          const pageText = textContent.items.map((item: any) => item.str).join(" ");
-          fullText += pageText + "\n";
+        for (let page = 1; page <= pdf.numPages; page += 1) {
+          const current = await pdf.getPage(page);
+          const textContent = await current.getTextContent();
+          fullText += `${textContent.items.map((item: any) => item.str).join(" ")}\n`;
         }
-        if (!fullText.trim()) throw new Error("Could not extract text from PDF. It might be a scan.");
+        if (!fullText.trim()) throw new Error("Could not extract text from PDF.");
         setResumeText(fullText.trim());
-      } else if (file.name.endsWith('.docx') || file.type.includes('wordprocessingml')) {
+      } else if (file.name.endsWith(".docx") || file.type.includes("wordprocessingml")) {
         const arrayBuffer = await file.arrayBuffer();
         const { value } = await mammoth.extractRawText({ arrayBuffer });
         setResumeText(value.trim());
       } else {
-        throw new Error("Format not supported. Use PDF or Word.");
+        throw new Error("Use PDF or Word (.docx) files.");
       }
     } catch (err: any) {
-      setError(err.message || "Failed to process file.");
+      setError(err.message || "Failed to read the uploaded file.");
     } finally {
       setIsReadingFile(false);
       event.target.value = "";
     }
   }, []);
 
-  const handleUrlFetch = async () => {
+  const handleUrlFetch = useCallback(async () => {
     if (!jobUrl) return;
     if (isStaticPagesRuntime) {
-      setError("GitHub Pages is static and cannot fetch job URLs. Paste the job description text manually, or open the live Hugging Face analyzer.");
+      setError("GitHub Pages cannot fetch job links. Open the live analyzer or paste the JD manually.");
       return;
     }
     setIsFetchingUrl(true);
     setError(null);
     try {
-      const response = await fetch('/api/scrape', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: jobUrl })
+      const response = await fetch("/api/scrape", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: jobUrl }),
       });
+      if (!response.ok) throw new Error(await readApiError(response));
       const data = await response.json();
-      if (data.text) {
-        setJobDescription(data.text);
-      } else {
-        throw new Error(data.error);
-      }
+      if (!data.text) throw new Error("No JD text was extracted from the link.");
+      setJobDescription(data.text);
+      setParsePreview(null);
     } catch (err: any) {
-      setError("Failed to fetch link. Try pasting the text manually.");
+      setError(err.message || "Failed to fetch the job page.");
     } finally {
       setIsFetchingUrl(false);
     }
-  };
+  }, [jobUrl]);
 
-  const analyzeResume = useCallback(async () => {
-    if (!resumeText || !jobDescription) {
-      setError("Please provide your resume and target job.");
+  const previewJd = useCallback(async () => {
+    if (!jobDescription) {
+      setError("Paste a job description or fetch a job link first.");
       return;
     }
+    if (isStaticPagesRuntime) {
+      setParsePreview({
+        domainDetection: buildStaticPreviewAnalysis(resumeText || "manufacturing", jobDescription).domainDetection,
+        jdQualityWarnings: buildStaticPreviewAnalysis(resumeText || "manufacturing", jobDescription).jdQualityWarnings,
+      });
+      return;
+    }
+    setIsPreviewingJd(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/jd/parse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobDescription }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      setParsePreview(await response.json());
+    } catch (err: any) {
+      setError(err.message || "JD preview failed.");
+    } finally {
+      setIsPreviewingJd(false);
+    }
+  }, [jobDescription, resumeText]);
 
+  const analyze = useCallback(async () => {
+    if (!resumeText || !jobDescription) {
+      setError("Please provide both the resume and the target job description.");
+      return;
+    }
     setIsAnalyzing(true);
     setError(null);
     setResult(null);
-    setShowUpsell(false);
-    setExtractedKeywords(extractScanWords());
 
     if (isStaticPagesRuntime) {
-      setTimeout(() => {
+      window.setTimeout(() => {
         finishAnalysis(buildStaticPreviewAnalysis(resumeText, jobDescription));
         setIsAnalyzing(false);
       }, 900);
@@ -304,564 +812,684 @@ export default function App() {
     }
 
     try {
-      let response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resumeText, jobDescription }),
       });
-
-      if (!response.ok) {
-        const errorMessage = await readApiError(response);
-        
-        // If HF key is missing, fallback to Gemini through the backend only.
-        if (["HF_KEY_MISSING", "HF_TOKEN_MISSING"].some((code) => errorMessage.includes(code))) {
-          response = await fetch('/api/analyze-gemini', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ resumeText, jobDescription }),
-          });
-          if (response.ok) {
-            finishAnalysis(await response.json());
-            return;
-          }
-        }
-        throw new Error(errorMessage);
-      }
-
-      const contentType = response.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        throw new Error(await readApiError(response));
-      }
-      const data = await response.json();
-      finishAnalysis(data);
+      if (!response.ok) throw new Error(await readApiError(response));
+      finishAnalysis(await response.json());
     } catch (err: any) {
-      console.error("Analysis Error:", err);
-      setError(err.message || "AI analysis failed. Please check your API key configuration.");
+      setError(err.message || "Analysis failed.");
     } finally {
       setIsAnalyzing(false);
     }
-  }, [resumeText, jobDescription, extractScanWords, finishAnalysis]);
+  }, [finishAnalysis, jobDescription, resumeText]);
+
+  const scoreMood = result ? scoreTone(result.finalScore) : scoreTone(64);
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] selection:bg-indigo-100 selection:text-indigo-900">
-      {/* Navigation */}
-      <nav className="fixed top-0 w-full bg-white/80 backdrop-blur-md border-b border-slate-200 z-[100] px-6 py-4">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-2 group cursor-pointer">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200 transition-transform group-hover:scale-110">
-              <TrendingUp className="text-white w-6 h-6" />
+    <div className="min-h-screen bg-[#f7f8fc] text-slate-900 selection:bg-indigo-100 selection:text-indigo-900">
+      <nav className="fixed top-0 z-[90] w-full border-b border-slate-200 bg-white/85 px-4 py-4 backdrop-blur md:px-6">
+        <div className="mx-auto flex max-w-7xl items-center justify-between">
+          <button type="button" onClick={scrollToInputs} className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-200">
+              <TrendingPulse />
             </div>
-            <span className="font-bold text-2xl tracking-tight text-slate-800">Pulse<span className="text-indigo-600">CV</span></span>
-          </div>
-          
-          <div className="hidden md:flex items-center gap-8 text-sm font-semibold text-slate-500">
-            <button onClick={scrollToInputs} className="hover:text-indigo-600 transition-colors">Analyzer</button>
-            <a href="https://pulsecv.com/templates" target="_blank" rel="noopener noreferrer" className="hover:text-indigo-600 transition-colors">Templates</a>
-            <a href="https://pulsecv.com/coaching" target="_blank" rel="noopener noreferrer" className="hover:text-indigo-600 transition-colors">Coaching</a>
-            <button onClick={scrollToInputs} className="bg-slate-900 text-white px-6 py-2.5 rounded-full hover:bg-slate-800 transition-all active:scale-95 shadow-lg shadow-slate-200">
-              Get Started
-            </button>
+            <div className="text-left">
+              <div className="text-3xl font-black tracking-tight text-slate-900">
+                Pulse<span className="text-indigo-600">CV</span>
+              </div>
+              <div className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">
+                Evidence-Based Hiring Intelligence
+              </div>
+            </div>
+          </button>
+
+          <div className="hidden items-center gap-8 md:flex">
+            <button onClick={scrollToInputs} className="text-sm font-bold text-slate-500 transition hover:text-indigo-600">Analyzer</button>
+            <button onClick={() => setActivePersona("candidate")} className="text-sm font-bold text-slate-500 transition hover:text-indigo-600">Candidate View</button>
+            <button onClick={() => setActivePersona("recruiter")} className="text-sm font-bold text-slate-500 transition hover:text-indigo-600">Recruiter Beta</button>
+            <a href="#pricing" className="rounded-full bg-slate-900 px-6 py-3 text-sm font-black text-white shadow-lg shadow-slate-200 transition hover:bg-slate-800">
+              Pricing
+            </a>
           </div>
 
-          <button className="md:hidden text-slate-800" onClick={() => setIsMenuOpen(!isMenuOpen)}>
+          <button className="text-slate-700 md:hidden" onClick={() => setIsMenuOpen((value) => !value)}>
             {isMenuOpen ? <X /> : <Menu />}
           </button>
         </div>
       </nav>
 
-      {/* Mobile Menu */}
       <AnimatePresence>
-        {isMenuOpen && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
+        {isMenuOpen ? (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="fixed inset-0 top-[72px] bg-white z-[90] md:hidden p-6 space-y-6"
+            exit={{ opacity: 0, y: -12 }}
+            className="fixed inset-x-4 top-24 z-[80] rounded-[2rem] border border-slate-200 bg-white p-6 shadow-2xl md:hidden"
           >
-            <div className="flex flex-col gap-6 text-lg font-bold">
-              <button className="text-left" onClick={() => { setIsMenuOpen(false); scrollToInputs(); }}>Analysis Engine</button>
-              <a href="https://pulsecv.com/templates" target="_blank" rel="noopener noreferrer" onClick={() => setIsMenuOpen(false)}>Resume Templates</a>
-              <a href="https://pulsecv.com/coaching" target="_blank" rel="noopener noreferrer" onClick={() => setIsMenuOpen(false)}>Executive Coaching</a>
+            <div className="flex flex-col gap-5 text-base font-bold text-slate-700">
+              <button className="text-left" onClick={() => { setIsMenuOpen(false); scrollToInputs(); }}>Analyzer</button>
+              <button className="text-left" onClick={() => { setIsMenuOpen(false); setActivePersona("candidate"); }}>Candidate View</button>
+              <button className="text-left" onClick={() => { setIsMenuOpen(false); setActivePersona("recruiter"); }}>Recruiter Beta</button>
+              <a href="#pricing" onClick={() => setIsMenuOpen(false)} className="rounded-2xl bg-slate-900 px-5 py-4 text-center text-white">Pricing</a>
             </div>
-            <button onClick={() => { setIsMenuOpen(false); scrollToInputs(); }} className="w-full bg-indigo-600 text-white py-4 rounded-2xl">Sign Up Free</button>
           </motion.div>
-        )}
+        ) : null}
       </AnimatePresence>
 
-      <main className="pt-28 pb-20 px-4 md:px-6 max-w-7xl mx-auto">
-        {isStaticPagesRuntime && (
-          <div className="mb-8 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-amber-800 text-sm font-semibold flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <span>
-              Static GitHub Pages preview: AI backend calls are not available here. Paste text to see a browser-only preview, or open the live Hugging Face analyzer.
-            </span>
-            <a
-              href={LIVE_ANALYZER_URL}
-              className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2 text-xs font-black text-white shadow-sm transition hover:bg-amber-800"
-            >
+      <main className="mx-auto max-w-7xl px-4 pb-24 pt-28 md:px-6">
+        {isStaticPagesRuntime ? (
+          <div className="mb-10 flex flex-col gap-3 rounded-[2rem] border border-amber-200 bg-amber-50 px-6 py-5 text-amber-900 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.24em]">Static preview mode</p>
+              <p className="mt-2 max-w-3xl text-sm font-medium leading-relaxed">
+                GitHub Pages shows the trust-first product shell and a lightweight browser preview. Open the live Hugging Face Space for the full evidence engine.
+              </p>
+            </div>
+            <a href={LIVE_ANALYZER_URL} className="inline-flex items-center justify-center rounded-2xl bg-amber-900 px-5 py-3 text-sm font-black text-white">
               Open live analyzer
             </a>
           </div>
-        )}
+        ) : null}
 
-        {/* Header Section */}
-        <section className="text-center mb-16 space-y-4">
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider mb-2"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            AI-Powered Optimization Engine
-          </motion.div>
-          <motion.h1 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="text-4xl md:text-6xl font-extrabold text-slate-900 tracking-tight leading-[1.1]"
-          >
-            {resumeText.match(/[\u0590-\u05FF]/) ? 'תפסיקו לנחש. תתחילו להתקבל.' : 'Stop Guessing. Start Landing.'}
-          </motion.h1>
-          <p className="text-slate-500 text-lg md:text-xl max-w-2xl mx-auto leading-relaxed">
-            {resumeText.match(/[\u0590-\u05FF]/) 
-              ? 'העלו את קורות החיים ותיאור המשרה. המודלים שלנו ינתחו את פרופיל ההעסקה שלכם וישפרו את המדדים בשניות.'
-              : 'Upload your resume and the job description. Our neural models analyze your hireability profile and optimize your metrics in seconds.'}
-          </p>
-        </section>
-
-        {/* Input Area */}
-        <div ref={inputRef} className="grid lg:grid-cols-2 gap-8 mb-16 px-2 md:px-0 scroll-mt-28">
-          <div className="space-y-6">
-            <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden group focus-within:ring-4 ring-indigo-50 transition-all">
-              <div className="bg-slate-50/50 px-6 py-4 flex items-center justify-between border-b border-slate-200">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center text-indigo-600">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  <h3 className="font-bold text-slate-700">Resume Content</h3>
-                </div>
-                <label className="flex items-center gap-2 bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-600 hover:border-indigo-400 hover:text-indigo-600 cursor-pointer shadow-sm transition-all active:scale-95">
-                  {isReadingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
-                  {isReadingFile ? 'Processing...' : 'Upload PDF / Docx'}
-                  <input type="file" className="hidden" accept=".pdf,.docx" onChange={handleFileUpload} />
-                </label>
-              </div>
-              <textarea 
-                value={resumeText}
-                onChange={(e) => setResumeText(e.target.value)}
-                placeholder="Paste your professional history or drop a file above..."
-                className="w-full h-80 p-8 focus:outline-none text-slate-600 leading-relaxed text-base resize-none"
-              />
-              {isReadingFile && (
-                <div className="flex items-center gap-3 text-indigo-600 text-sm font-semibold px-8 pb-4">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  Reading file...
-                </div>
-              )}
-              <div className="text-right text-xs text-slate-400 px-6 pb-3">
-                {resumeText.length.toLocaleString()} characters
-              </div>
+        <section className="grid gap-12 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
+          <div className="space-y-8">
+            <div className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-4 py-2 text-xs font-black uppercase tracking-[0.24em] text-indigo-700">
+              <ShieldCheck className="h-4 w-4" />
+              Explainable Fit Intelligence for Industrial Hiring
+            </div>
+            <div className="space-y-5">
+              <h1 className={`text-5xl font-black tracking-tight text-slate-950 md:text-7xl ${rtl ? "leading-[1.15]" : "leading-[0.98]"}`}>
+                {rtl ? "הבינו מה קורות החיים באמת מוכיחים." : "See what the CV truly proves."}
+              </h1>
+              <p className={`max-w-2xl text-lg leading-relaxed text-slate-500 md:text-xl ${rtl ? "text-right" : ""}`}>
+                {rtl
+                  ? "Pulse CV מפרק את תיאור המשרה לדרישות מובנות, מאתר ראיות אמיתיות בקורות החיים, מסמן פערים אמיתיים ורמות ביטחון, ומציג מפה שניתנת להסבר, לבדיקה ולאמון."
+                  : "Pulse CV decomposes the job into typed requirements, finds real evidence in the resume, highlights true gaps, and shows how confident each decision really is."}
+              </p>
+            </div>
+            <div className="flex flex-col gap-4 sm:flex-row">
+              <button onClick={scrollToInputs} className="inline-flex items-center justify-center gap-3 rounded-[1.6rem] bg-slate-950 px-7 py-4 text-sm font-black uppercase tracking-[0.18em] text-white shadow-2xl shadow-slate-200">
+                Start analysis
+                <ArrowRight className="h-4 w-4" />
+              </button>
+              <a href="#pricing" className="inline-flex items-center justify-center gap-3 rounded-[1.6rem] border border-slate-200 bg-white px-7 py-4 text-sm font-black uppercase tracking-[0.18em] text-slate-700">
+                View plans
+              </a>
             </div>
           </div>
 
-          <div className="space-y-6">
-            <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden focus-within:ring-4 ring-indigo-50 transition-all">
-              <div className="bg-slate-50/50 px-6 py-4 flex items-center justify-between border-b border-slate-200">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">
-                    <Globe className="w-5 h-5" />
-                  </div>
-                  <h3 className="font-bold text-slate-700">Job Description</h3>
+          <div className="relative overflow-hidden rounded-[3rem] border border-indigo-100 bg-[linear-gradient(135deg,#0f172a_0%,#312e81_55%,#4338ca_100%)] p-8 shadow-[0_40px_120px_rgba(79,70,229,0.18)] md:p-10">
+            <div className="absolute right-0 top-0 h-52 w-52 rounded-full bg-white/10 blur-3xl" />
+            <div className="relative z-10 space-y-8">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.24em] text-indigo-200">Flagship view</p>
+                  <h2 className="mt-2 text-3xl font-black tracking-tight text-white">Evidence Map</h2>
                 </div>
-                <div className="flex items-center gap-2">
-                  <input 
-                    type="text" 
+                <div className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white">
+                  Beta in place
+                </div>
+              </div>
+              <div className="grid gap-4">
+                {[
+                  ["Role title", "Matched", "Plant / manufacturing engineering scope appears in both JD and CV."],
+                  ["Tools", "Partial", "AutoCAD and SolidWorks are visible, but only one has direct project context."],
+                  ["Leadership", "Weak evidence", "Leadership exists, but plant-specific scope is only partly explicit."],
+                  ["Must-have", "Missing", "Electrical engineering background is requested but not proven in the CV."],
+                ].map(([label, state, note]) => (
+                  <div key={label} className="rounded-[1.8rem] border border-white/10 bg-white/10 p-4 text-white/90 backdrop-blur">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-black">{label}</p>
+                      <span className="rounded-full bg-white/15 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-indigo-50">{state}</span>
+                    </div>
+                    <p className="mt-3 text-sm leading-relaxed text-indigo-100">{note}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-14 grid gap-6 md:grid-cols-3">
+          {[
+            ["Requirement Intelligence", "Typed requirements by category", "Role, seniority, tools, leadership, must-haves, and manufacturing context."],
+            ["Evidence Mapping", "What the CV really proves", "Exact proof, partial support, weak evidence, and uncertainty with citations."],
+            ["JD Quality Review", "Catch vague or overloaded briefs", "Find requirement inflation, mixed scopes, duplicate asks, and hard-to-evaluate wording."],
+          ].map(([eyebrow, title, body]) => (
+            <div key={title} className="rounded-[2rem] border border-slate-200 bg-white px-6 py-7 shadow-sm">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">{eyebrow}</p>
+              <h3 className="mt-3 text-2xl font-black tracking-tight text-slate-900">{title}</h3>
+              <p className="mt-4 text-sm leading-relaxed text-slate-500">{body}</p>
+            </div>
+          ))}
+        </section>
+
+        <section ref={inputRef} className="mt-20 scroll-mt-28">
+          <div className="grid gap-8 xl:grid-cols-[1fr_1fr_0.9fr]">
+            <div className="rounded-[2.5rem] border border-slate-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+                    <FileText className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black tracking-tight text-slate-900">Resume intake</h3>
+                    <p className="text-sm text-slate-500">Paste text or upload a PDF / Word file.</p>
+                  </div>
+                </div>
+                <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-100">
+                  {isReadingFile ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                  Upload
+                  <input type="file" accept=".pdf,.doc,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" onChange={handleFileUpload} />
+                </label>
+              </div>
+              <div className="p-6">
+                <textarea
+                  value={resumeText}
+                  onChange={(event) => setResumeText(event.target.value)}
+                  dir={isRTL(resumeText) ? "rtl" : "ltr"}
+                  className={`h-[24rem] w-full resize-none rounded-[2rem] border border-slate-200 bg-slate-50/80 px-5 py-4 text-base leading-relaxed text-slate-700 outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-4 focus:ring-indigo-50 ${isRTL(resumeText) ? "text-right" : ""}`}
+                  placeholder="Paste the resume content here..."
+                />
+              </div>
+            </div>
+
+            <div className="rounded-[2.5rem] border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-col gap-4 border-b border-slate-100 px-6 py-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+                    <BriefcaseBusiness className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black tracking-tight text-slate-900">Job description intake</h3>
+                    <p className="text-sm text-slate-500">Paste, fetch from LinkedIn, then preview the typed requirements.</p>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <input
                     value={jobUrl}
-                    onChange={(e) => setJobUrl(e.target.value)}
-                    placeholder="Link (LinkedIn/Indeed)"
-                    className="bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-xs w-32 md:w-48 focus:border-indigo-500 outline-none"
+                    onChange={(event) => setJobUrl(event.target.value)}
+                    className="h-12 min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-medium text-slate-700 outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-4 focus:ring-indigo-50"
+                    placeholder="LinkedIn job URL"
                   />
-                  <button 
+                  <button
                     onClick={handleUrlFetch}
-                    disabled={isFetchingUrl || !jobUrl}
-                    className="bg-slate-900 text-white p-2 md:px-4 md:py-1.5 rounded-lg text-xs font-bold hover:bg-slate-800 disabled:opacity-50"
+                    disabled={isFetchingUrl}
+                    className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-slate-900 px-5 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {isFetchingUrl ? <Loader2 className="w-4 h-4 animate-spin mx-auto" strokeWidth={3} /> : 'Fetch'}
+                    {isFetchingUrl ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
+                    Fetch
                   </button>
                 </div>
               </div>
-              <textarea 
-                value={jobDescription}
-                onChange={(e) => setJobDescription(e.target.value)}
-                placeholder="Paste the target job requirements or use the URL tool..."
-                className="w-full h-80 p-8 focus:outline-none text-slate-600 leading-relaxed text-base resize-none"
-              />
-              <div className="text-right text-xs text-slate-400 px-6 pb-3">
-                {jobDescription.length.toLocaleString()} characters
+              <div className="p-6">
+                <textarea
+                  value={jobDescription}
+                  onChange={(event) => setJobDescription(event.target.value)}
+                  dir={isRTL(jobDescription) ? "rtl" : "ltr"}
+                  className={`h-[24rem] w-full resize-none rounded-[2rem] border border-slate-200 bg-slate-50/80 px-5 py-4 text-base leading-relaxed text-slate-700 outline-none transition focus:border-indigo-300 focus:bg-white focus:ring-4 focus:ring-indigo-50 ${isRTL(jobDescription) ? "text-right" : ""}`}
+                  placeholder="Paste the job description here..."
+                />
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* Global CTA */}
-        <div className="max-w-xl mx-auto mb-20 px-4 md:px-0">
-          <button 
-            onClick={analyzeResume}
-            disabled={isAnalyzing || !resumeText || !jobDescription}
-            className={`w-full py-5 rounded-2xl flex items-center justify-center gap-4 text-lg font-bold shadow-2xl transition-all transform hover:-translate-y-1 active:scale-95 ${
-              isAnalyzing 
-                ? 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none' 
-                : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-200'
-            }`}
-          >
-            {isAnalyzing ? (
-              <>
-                <RefreshCcw className="w-6 h-6 animate-spin" strokeWidth={3} />
-                Auditing Neural Profile...
-              </>
-            ) : (
-              <>
-                <Target className="w-6 h-6" strokeWidth={3} />
-                Generate Hireability Report
-                <ArrowRight className="w-6 h-6" strokeWidth={3} />
-              </>
-            )}
-          </button>
-          
-          {error && (
-            <motion.div initial={{opacity:0}} animate={{opacity:1}} className="mt-4 p-4 bg-red-50 text-red-600 rounded-xl flex items-center gap-3 text-sm font-semibold border border-red-100 shadow-sm">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              {error}
-            </motion.div>
-          )}
-        </div>
-
-        {/* Results Experience */}
-        <AnimatePresence>
-          {result && (
-            <motion.div 
-              ref={resultsRef}
-              initial={{ opacity: 0, y: 50 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="space-y-12 scroll-mt-28"
-            >
-              {/* Score Bento */}
-              <div className="grid md:grid-cols-3 gap-6">
-                <div className="md:col-span-2 bg-slate-900 text-white p-10 rounded-[2.5rem] shadow-2xl relative overflow-hidden group">
-                  <div className="absolute -right-20 -top-20 w-80 h-80 bg-indigo-600/20 rounded-full blur-[100px] group-hover:bg-indigo-600/30 transition-all duration-700" />
-                  <div className="relative z-10 flex flex-col md:flex-row justify-between md:items-center gap-10">
-                    <div>
-                      <p className="text-indigo-300 font-bold uppercase tracking-widest text-xs mb-4">Deterministic ATS Match</p>
-                      <h2 className="text-8xl font-black tracking-tighter mb-4">{result.matchScore}%</h2>
-                      <div className="flex flex-wrap gap-3">
-                         <div className="bg-white/10 backdrop-blur-md px-4 py-2 rounded-xl text-xs font-bold border border-white/10">
-                           ATS Visibility: {result.atsVisibilityScore}/100
-                         </div>
-                         {result.scoreLocked && (
-                           <div className="bg-emerald-400/15 text-emerald-200 backdrop-blur-md px-4 py-2 rounded-xl text-xs font-bold border border-emerald-300/20">
-                             Score locked for identical inputs
-                           </div>
-                         )}
-                      </div>
-                    </div>
-                    <div className="text-center md:text-right">
-                       <div className={`inline-block px-8 py-4 rounded-3xl text-sm font-black uppercase tracking-widest shadow-xl ${
-                         result.jobFitDecision === 'High' ? 'bg-emerald-400 text-slate-900 shadow-emerald-500/20' :
-                         result.jobFitDecision === 'Medium' ? 'bg-amber-400 text-slate-900 shadow-amber-500/20' :
-                         'bg-rose-500 text-white shadow-rose-500/20'
-                       }`}>
-                         {result.jobFitDecision} ATS Alignment
-                       </div>
-                    </div>
+            <div className="space-y-6">
+              <div className="rounded-[2.5rem] border border-slate-200 bg-white p-6 shadow-sm">
+                <SectionHeader
+                  icon={FileSearch}
+                  title="Source status"
+                  subtitle="Preview the parsed job structure before you run a full fit analysis."
+                />
+                <div className="mt-6 space-y-4">
+                  <div className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Current source</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-700">{jobUrl ? "LinkedIn URL or web job page" : "Pasted JD text"}</p>
                   </div>
-                </div>
-
-                <div className="bg-white border border-slate-200 p-8 rounded-[2.5rem] shadow-xl flex flex-col justify-center text-center">
-                   <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
-                     <ShieldCheck className="w-8 h-8" />
-                   </div>
-                   <h3 className="font-bold text-xl text-slate-800 mb-2">Authenticated Report</h3>
-                   <p className="text-slate-500 text-sm leading-relaxed">
-                     Your score is computed deterministically. AI is used only for explanation and rewrite suggestions.
-                   </p>
+                  <button
+                    onClick={previewJd}
+                    disabled={isPreviewingJd}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-[1.6rem] border border-slate-200 bg-white px-5 py-4 text-sm font-black uppercase tracking-[0.16em] text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isPreviewingJd ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                    Preview JD structure
+                  </button>
+                  <button
+                    onClick={analyze}
+                    disabled={isAnalyzing}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-[1.8rem] bg-indigo-600 px-5 py-4 text-sm font-black uppercase tracking-[0.16em] text-white shadow-xl shadow-indigo-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isAnalyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <BrainCircuit className="h-4 w-4" />}
+                    Run evidence analysis
+                  </button>
                 </div>
               </div>
-              {result.aiWarning && (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm font-semibold text-amber-800">
-                  {result.aiWarning}
-                </div>
-              )}
 
-              {/* Core Analysis cards */}
-              <div className="grid lg:grid-cols-2 gap-8">
-                 <div className="space-y-8">
-                    <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-xl space-y-6">
-                       <div className="flex items-center gap-3 text-slate-800">
-                         <Terminal className="w-6 h-6 text-indigo-500" />
-                         <h3 className="text-xl font-extrabold tracking-tight">{result.profileSummary.match(/[\u0590-\u05FF]/) ? 'סיכום מנהלים' : 'Executive Summary'}</h3>
-                       </div>
-                       <p dir={isRTL(result.profileSummary) ? 'rtl' : 'ltr'} className={`text-slate-600 leading-relaxed font-medium ${isRTL(result.profileSummary) ? 'text-right' : ''}`}>
-                         {result.profileSummary}
-                       </p>
-                    </div>
-
-                    <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-xl space-y-6">
-                       <div className="flex items-center gap-3 text-slate-800">
-                         <Zap className="w-6 h-6 text-amber-500" />
-                         <h3 className="text-xl font-extrabold tracking-tight">Critical Gaps</h3>
-                       </div>
-                       <div className="space-y-3">
-                         <h4 className="text-xs font-black uppercase text-slate-400 tracking-widest">Keyword Coverage</h4>
-                         <div className="grid grid-cols-2 gap-5">
-                           <div>
-                             <span className="text-[10px] font-bold text-emerald-600 uppercase">Found in Resume</span>
-                             {presentKeywords.slice(0, 10).map((kw, i) => (
-                               <div key={`${kw}-${i}`} className="flex items-center gap-2 text-xs py-1">
-                                 <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
-                                 <span className="text-slate-600 font-medium">{kw}</span>
-                               </div>
-                             ))}
-                           </div>
-                           <div>
-                             <span className="text-[10px] font-bold text-rose-600 uppercase">Missing</span>
-                             {result.missingKeywords?.map((kw, i) => (
-                               <div key={`${kw}-${i}`} className="flex items-center gap-2 text-xs py-1">
-                                 <span className="w-2 h-2 rounded-full bg-rose-400 shrink-0" />
-                                 <span className="text-slate-600 font-medium">{kw}</span>
-                               </div>
-                             ))}
-                           </div>
-                         </div>
-                       </div>
-                    </div>
-                 </div>
-
-                 <div className="bg-indigo-600 p-8 rounded-[2rem] text-white shadow-2xl relative overflow-hidden flex flex-col">
-                    <div className="absolute -left-10 -bottom-10 w-60 h-60 bg-white/10 rounded-full blur-[80px]" />
-                    <div className="relative z-10 flex flex-col h-full">
-                       <div className="flex items-center gap-3 mb-6">
-                         <Crown className="w-8 h-8 text-amber-400" />
-                         <h3 className="text-2xl font-black tracking-tight">AI Tailored Bio</h3>
-                       </div>
-                       <p dir={isRTL(result.tailoredBio) ? 'rtl' : 'ltr'} className={`text-lg font-medium leading-relaxed italic text-indigo-50 mb-8 grow ${isRTL(result.tailoredBio) ? 'text-right' : ''}`}>
-                         "{result.tailoredBio}"
-                       </p>
-                       <button onClick={copyOptimizedBio} className="flex items-center justify-center gap-2 bg-white text-indigo-600 py-4 rounded-2xl font-bold uppercase text-xs tracking-widest hover:bg-indigo-50 transition-all shadow-xl shadow-indigo-800/20 active:scale-95">
-                         {copyBioLabel}
-                         <MousePointer2 className="w-4 h-4" />
-                       </button>
-                    </div>
-                 </div>
-              </div>
-
-              {/* Optimization Deep Dive */}
-              <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-2xl overflow-hidden px-4 md:px-0">
-                 <div className="bg-slate-50 px-8 py-6 border-b border-slate-200 flex flex-col md:flex-row justify-between md:items-center gap-4">
-                    <h3 className="text-xl font-extrabold text-slate-800 flex items-center gap-3">
-                      <LayoutGrid className="w-6 h-6 text-indigo-500" />
-                      Content Optimization (Deep Dive)
-                    </h3>
-                    <div className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400 tracking-tighter">
-                      Powered by Neural-Audit-v4
-                    </div>
-                 </div>
-                 <div className="p-8 space-y-8">
-                    {result.bulletPointOptimization?.map((bp, i) => (
-                      <div key={i} className="grid md:grid-cols-3 gap-8 pb-8 border-b border-slate-100 last:border-0">
-                         <div className="space-y-2">
-                            <span className="text-[10px] font-black uppercase text-indigo-500 tracking-widest">Original Context</span>
-                            <div className="text-sm text-slate-400 bg-slate-50 p-4 rounded-2xl border border-slate-100 line-through italic">
-                              {bp.original}
-                            </div>
-                         </div>
-                         <div className="md:col-span-2 space-y-4">
-                            <div className="space-y-2">
-                               <span className="text-[10px] font-black uppercase text-emerald-500 tracking-widest">Optimized High-Impact Version</span>
-                               <div className="text-base font-bold text-slate-800 bg-white p-5 rounded-2xl border-2 border-emerald-100 shadow-lg shadow-emerald-50 flex items-start gap-3">
-                                  <div className="w-6 h-6 bg-emerald-100 text-emerald-600 rounded flex items-center justify-center grow-0 shrink-0 mt-0.5">
-                                    <TrendingUp className="w-4 h-4" />
-                                  </div>
-                                  {bp.optimized}
-                               </div>
-                            </div>
-                            <div className="flex items-start gap-3 text-slate-500 text-xs leading-relaxed pl-1">
-                               <MessageSquare className="w-4 h-4 shrink-0 text-indigo-400 mt-0.5" strokeWidth={3} />
-                               <span className="font-semibold">{bp.rationale}</span>
-                            </div>
-                         </div>
+              {parsePreview ? (
+                <div className="rounded-[2.5rem] border border-slate-200 bg-white p-6 shadow-sm">
+                  <SectionHeader
+                    icon={Database}
+                    title="JD extraction preview"
+                    subtitle="This preview shows what the system currently sees before matching it to the CV."
+                  />
+                  <div className="mt-6 space-y-5">
+                    {parsePreview.domainDetection ? (
+                      <div className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                        <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Detected domain</p>
+                        <p className="mt-2 text-base font-bold text-slate-900">{parsePreview.domainDetection.primaryDomain} / {parsePreview.domainDetection.roleFamily.replace(/_/g, " ")}</p>
+                        <p className="mt-2 text-sm text-slate-500">confidence {Math.round(parsePreview.domainDetection.confidence * 100)}%</p>
+                      </div>
+                    ) : null}
+                    {groupEntries<Requirement>(parsePreview.jdRequirementsByType).slice(0, 3).map(([group, items]) => (
+                      <div key={group} className="rounded-2xl border border-slate-100 bg-white p-4">
+                        <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">{group}</p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {items.slice(0, 8).map((item) => (
+                            <span key={item.id} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700">
+                              {item.label}
+                            </span>
+                          ))}
+                        </div>
                       </div>
                     ))}
-                 </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </section>
+
+        {error ? (
+          <div className="mt-8 rounded-[2rem] border border-rose-200 bg-rose-50 px-6 py-5 text-sm font-semibold text-rose-700">
+            {error}
+          </div>
+        ) : null}
+
+        {result ? (
+          <motion.section
+            ref={resultsRef}
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-16 space-y-8"
+          >
+            <div className="grid gap-8 xl:grid-cols-[1.15fr_0.85fr]">
+              <div className="overflow-hidden rounded-[3rem] border border-slate-200 bg-[linear-gradient(135deg,#0f172a_0%,#172554_55%,#312e81_100%)] p-8 shadow-[0_40px_120px_rgba(15,23,42,0.18)] md:p-10">
+                <div className="flex flex-wrap items-start justify-between gap-6">
+                  <div className="max-w-2xl space-y-5">
+                    <p className="text-xs font-black uppercase tracking-[0.24em] text-indigo-200">Candidate view / evidence-backed summary</p>
+                    <h2 className="text-4xl font-black tracking-tight text-white md:text-5xl">
+                      {result.jobFitDecision === "High"
+                        ? "Strong evidence-backed fit"
+                        : result.jobFitDecision === "Medium"
+                          ? "Selective fit with real gaps"
+                          : "High review needed before applying"}
+                    </h2>
+                    <p className="max-w-2xl text-base leading-relaxed text-indigo-100 md:text-lg">
+                      {result.profileSummary}
+                    </p>
+                    <div className="flex flex-wrap gap-3">
+                      <span className="rounded-full bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white">
+                        domain {result.domainDetection.primaryDomain}
+                      </span>
+                      <span className="rounded-full bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white">
+                        role {result.domainDetection.roleFamily.replace(/_/g, " ")}
+                      </span>
+                      <span className="rounded-full bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white">
+                        confidence {result.confidenceScore}%
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 text-right">
+                    <div>
+                      <div className="text-[11px] font-black uppercase tracking-[0.2em] text-indigo-200">Final fit score</div>
+                      <div className="mt-1 text-7xl font-black leading-none text-white">{result.finalScore}%</div>
+                    </div>
+                    <div className={`inline-flex items-center justify-center rounded-full px-5 py-3 text-xs font-black uppercase tracking-[0.2em] ${scoreMood.className}`}>
+                      {scoreMood.label}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-10 grid gap-4 md:grid-cols-4">
+                  {[
+                    ["Must-have coverage", result.scoringBreakdown.mustHaveCoverage],
+                    ["Role fit", result.scoringBreakdown.roleFitScore],
+                    ["Domain fit", result.scoringBreakdown.domainFitScore],
+                    ["Confidence", result.scoringBreakdown.confidenceScore],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-[2rem] border border-white/10 bg-white/10 p-5">
+                      <div className="text-[11px] font-black uppercase tracking-[0.2em] text-indigo-200">{label}</div>
+                      <div className="mt-3 text-3xl font-black text-white">{value}%</div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              {/* Premium Upsell */}
-              {showUpsell && (
-                <motion.div 
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className={`${upsellCopy.className} rounded-[3rem] p-10 md:p-16 text-center text-white space-y-8 border overflow-hidden relative`}
-                >
-                  <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-white/10 to-transparent pointer-events-none" />
-                  <div className="relative z-10 max-w-2xl mx-auto space-y-6">
-                    <div className="w-20 h-20 bg-amber-400 rounded-[2rem] flex items-center justify-center mx-auto shadow-2xl shadow-amber-500/50 mb-4 animate-bounce">
-                      <Crown className="w-10 h-10 text-slate-900" />
+              <div className="rounded-[3rem] border border-slate-200 bg-white p-8 shadow-sm">
+                <SectionHeader
+                  icon={ShieldCheck}
+                  title="Trust layer"
+                  subtitle="This report is decomposed, cited, and confidence-aware. AI is only used for wording and explanation."
+                />
+                <div className="mt-6 grid gap-4">
+                  {result.uncertaintyFlags.length ? (
+                    result.uncertaintyFlags.map((flag, index) => (
+                      <div key={`${flag}-${index}`} className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                        {flag}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                      No major uncertainty flags were raised in this analysis.
                     </div>
-                    <h2 className="text-3xl md:text-5xl font-black tracking-tight">{upsellCopy.headline}</h2>
-                    <p className="text-indigo-100 text-lg md:text-xl font-medium leading-relaxed">
-                      {upsellCopy.subtext}
-                    </p>
-                    <div className="flex flex-col md:flex-row justify-center gap-4 pt-4">
-                      <a href="https://pulsecv.com/get-started" target="_blank" rel="noopener noreferrer" className="bg-white text-indigo-600 px-10 py-5 rounded-2xl font-bold uppercase tracking-widest text-sm hover:bg-slate-50 transition-all shadow-2xl active:scale-95">
-                         {upsellCopy.cta}
-                      </a>
-                      <a href="https://pulsecv.com/templates" target="_blank" rel="noopener noreferrer" className="bg-indigo-700/50 backdrop-blur-md text-white border border-indigo-400 px-10 py-5 rounded-2xl font-bold uppercase tracking-widest text-sm hover:bg-indigo-700 transition-all active:scale-95">
-                         Preview Pro Designs
-                      </a>
+                  )}
+                  {result.aiWarning ? (
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
+                      {result.aiWarning}
                     </div>
-                    <div className="pt-8 flex items-center justify-center gap-8 opacity-60 grayscale brightness-200 text-[10px] font-black uppercase tracking-widest">
-                      <span>Trusted by 20,000+ Pros</span>
-                      <span>Verified Accuracy</span>
-                      <span>24/7 Coaching Support</span>
+                  ) : null}
+                  <div className="rounded-[2rem] border border-slate-200 bg-slate-50/80 p-5">
+                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Analysis meta</p>
+                    <div className="mt-3 grid gap-2 text-sm text-slate-600">
+                      <div>Mode: {result.analysisMeta.analysisMode}</div>
+                      <div>Version: {result.analysisMeta.version}</div>
+                      <div>Generated: {new Date(result.analysisMeta.generatedAt).toLocaleString()}</div>
+                      <div>Score locked: {result.scoreLocked ? "Yes" : "No"}</div>
                     </div>
                   </div>
-                </motion.div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-8 xl:grid-cols-[1fr_0.92fr]">
+              <div className="space-y-8">
+                <div className="rounded-[2.5rem] border border-slate-200 bg-white p-8 shadow-sm">
+                  <SectionHeader
+                    icon={Target}
+                    title="What the role truly demands"
+                    subtitle="Typed requirements are grouped so the fit is readable and auditable."
+                  />
+                  <div className="mt-6 grid gap-4 md:grid-cols-2">
+                    {groupEntries<Requirement>(result.jdRequirementsByType).map(([group, items]) => (
+                      <div key={group} className="rounded-[1.8rem] border border-slate-100 bg-slate-50/80 p-5">
+                        <div className="flex items-center justify-between gap-4">
+                          <h4 className="text-sm font-black uppercase tracking-[0.18em] text-slate-400">{group}</h4>
+                          <span className="text-xs font-bold text-slate-400">{items.length}</span>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {items.slice(0, 10).map((item) => (
+                            <span key={item.id} className={`rounded-full border px-3 py-1.5 text-xs font-bold ${item.mustHave ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-700"}`}>
+                              {item.label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <EvidenceMap rows={result.evidenceMap} />
+
+                <div className="rounded-[2.5rem] border border-slate-200 bg-white p-8 shadow-sm">
+                  <SectionHeader
+                    icon={AlertTriangle}
+                    title="JD Quality Review"
+                    subtitle="The system also audits the job description itself for vague or overloaded hiring logic."
+                  />
+                  <div className="mt-6 space-y-4">
+                    {result.jdQualityWarnings.length ? result.jdQualityWarnings.map((warning) => (
+                      <div key={warning.id} className={`rounded-[1.8rem] border p-5 ${warning.severity === "high_risk" ? "border-rose-200 bg-rose-50" : warning.severity === "warning" ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <span className="rounded-full bg-white/80 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-700">{warning.severity.replace("_", " ")}</span>
+                          <p className="font-black text-slate-900">{warning.title}</p>
+                        </div>
+                        <p className="mt-3 text-sm leading-relaxed text-slate-600">{warning.message}</p>
+                      </div>
+                    )) : (
+                      <div className="rounded-[1.8rem] border border-emerald-200 bg-emerald-50 p-5 text-sm font-semibold text-emerald-800">
+                        No major JD quality issues were detected in this pass.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-8">
+                <div className="rounded-[2.5rem] border border-slate-200 bg-white p-8 shadow-sm">
+                  <SectionHeader
+                    icon={Layers3}
+                    title="Requirement coverage by category"
+                    subtitle="Grouped results distinguish strong proof, weak support, and real missing must-haves."
+                  />
+                  <div className="mt-6 space-y-6">
+                    {groupEntries<RequirementMatch>(result.matchedEvidenceByType).map(([group, items]) => (
+                      <div key={group}>
+                        <RequirementGroup title={group} items={items.slice(0, 4)} />
+                      </div>
+                    ))}
+                    {groupEntries<RequirementMatch>(result.missingRequirementsByType).map(([group, items]) => (
+                      <div key={`${group}-missing`}>
+                        <RequirementGroup title={`${group} / needs review`} items={items.slice(0, 4)} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-[2.5rem] border border-slate-200 bg-[linear-gradient(135deg,#312e81_0%,#4338ca_100%)] p-8 text-white shadow-[0_35px_90px_rgba(67,56,202,0.24)]">
+                  <SectionHeader
+                    icon={Sparkles}
+                    title="AI wording layer"
+                    subtitle="This layer drafts narrative and rewrite guidance on top of the deterministic evidence model."
+                  />
+                  <p className={`mt-6 text-lg leading-relaxed text-indigo-50 ${isRTL(result.tailoredBio) ? "text-right" : ""}`} dir={isRTL(result.tailoredBio) ? "rtl" : "ltr"}>
+                    {result.tailoredBio}
+                  </p>
+                  <button onClick={copyBio} className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-[1.6rem] bg-white px-5 py-4 text-sm font-black uppercase tracking-[0.18em] text-indigo-700 shadow-xl">
+                    {copyBioLabel}
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="rounded-[2.5rem] border border-slate-200 bg-white p-8 shadow-sm">
+                  <SectionHeader
+                    icon={BookOpen}
+                    title={activePersona === "candidate" ? "Candidate recommendations" : activePersona === "recruiter" ? "Recruiter recommendations" : "Hiring manager review"}
+                    subtitle={activePersona === "candidate"
+                      ? "Separate wording improvements from proof gaps that require real experience."
+                      : activePersona === "recruiter"
+                        ? "Use this mode to see weak zones and interview probes."
+                        : "This beta view helps you judge JD calibration and what to probe manually."}
+                  />
+
+                  <div className="mt-6 flex flex-wrap gap-2">
+                    {(["candidate", "recruiter", "manager"] as const).map((persona) => (
+                      <button
+                        key={persona}
+                        onClick={() => setActivePersona(persona)}
+                        className={`rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.18em] ${activePersona === persona ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600"}`}
+                      >
+                        {persona === "candidate" ? "Candidate" : persona === "recruiter" ? "Recruiter beta" : "Hiring manager beta"}
+                      </button>
+                    ))}
+                  </div>
+
+                  {activePersona === "candidate" ? (
+                    <div className="mt-6 grid gap-4">
+                      <InsightBlock title="Fixable by wording" items={result.candidateRecommendations.wordingFixes} />
+                      <InsightBlock title="Not fixable by wording" items={result.candidateRecommendations.proofGaps} />
+                      <InsightBlock title="Likely interview questions" items={result.candidateRecommendations.likelyInterviewQuestions} />
+                      <InsightBlock title="Title alignment" items={result.candidateRecommendations.titleAlignmentSuggestions} />
+                    </div>
+                  ) : activePersona === "recruiter" ? (
+                    <div className="mt-6 grid gap-4">
+                      <InsightBlock title="Verify manually" items={result.recruiterRecommendations.verifyManually} />
+                      <InsightBlock title="Weak evidence zones" items={result.recruiterRecommendations.weakEvidenceZones} />
+                      <InsightBlock title="Interview probes" items={result.recruiterRecommendations.interviewProbes} />
+                      <InsightBlock title="Possible false negatives" items={result.recruiterRecommendations.possibleFalseNegatives} />
+                    </div>
+                  ) : (
+                    <div className="mt-6 grid gap-4">
+                      <InsightBlock
+                        title="JD quality issues to review"
+                        items={result.jdQualityWarnings.map((warning) => warning.message).slice(0, 4)}
+                      />
+                      <InsightBlock
+                        title="What to probe in interview"
+                        items={result.recruiterRecommendations.interviewProbes}
+                      />
+                      <InsightBlock
+                        title="Scope clarity checks"
+                        items={[
+                          "Does the role title match the actual expected leadership scope?",
+                          "Are the must-haves limited to requirements that can be evaluated from CV evidence?",
+                          "Is this a plant, process, maintenance, or cross-functional leadership role?",
+                        ]}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[2.5rem] border border-slate-200 bg-white p-8 shadow-sm">
+              <SectionHeader
+                icon={LayoutGrid}
+                title="Rewrite guidance"
+                subtitle="These suggestions stay grounded in the evidence model and avoid fabricating experience."
+              />
+              <div className="mt-6 space-y-5">
+                {result.bulletPointOptimization.map((item, index) => (
+                  <div key={`${item.original}-${index}`} className="grid gap-4 rounded-[2rem] border border-slate-100 bg-slate-50/80 p-5 md:grid-cols-[0.9fr_1.1fr]">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Original</p>
+                      <div className="mt-3 rounded-2xl bg-white px-4 py-3 text-sm leading-relaxed text-slate-500">{item.original}</div>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-600">Evidence-safe rewrite</p>
+                      <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold leading-relaxed text-slate-800">
+                        {item.optimized}
+                      </div>
+                      <p className="mt-3 text-xs leading-relaxed text-slate-500">{item.rationale}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <section id="pricing" className="rounded-[3rem] border border-slate-200 bg-[linear-gradient(135deg,#0f172a_0%,#1e1b4b_100%)] p-8 text-white shadow-[0_40px_120px_rgba(15,23,42,0.22)] md:p-12">
+              <div className="grid gap-10 lg:grid-cols-[0.9fr_1.1fr]">
+                <div className="space-y-5">
+                  <p className="text-xs font-black uppercase tracking-[0.24em] text-indigo-200">Commercial model beta</p>
+                  <h2 className="text-4xl font-black tracking-tight md:text-5xl">Evidence-backed analysis, not ATS myths.</h2>
+                  <p className="max-w-xl text-base leading-relaxed text-indigo-100 md:text-lg">
+                    Free gives a trusted summary, must-have coverage, and a limited evidence map. Premium unlocks the full fit breakdown, recruiter-grade evidence detail, JD quality review, and interview readiness.
+                  </p>
+                </div>
+                <div className="grid gap-5 md:grid-cols-2">
+                  <PricingCard
+                    tier="Free"
+                    price="$0"
+                    features={[
+                      "Limited evidence map preview",
+                      "Must-have coverage summary",
+                      "Core candidate recommendations",
+                      "Basic JD quality review",
+                    ]}
+                    accent="bg-white text-slate-900"
+                  />
+                  <PricingCard
+                    tier="Premium report"
+                    price="$19"
+                    features={[
+                      "Full evidence map",
+                      "Full fit breakdown by category",
+                      "Interview question pack",
+                      "JD quality review with risk flags",
+                    ]}
+                    accent="bg-indigo-500 text-white"
+                    premium
+                  />
+                </div>
+              </div>
+            </section>
+          </motion.section>
+        ) : null}
       </main>
 
-      <ScanningOverlay word={currentScanWord} isVisible={isAnalyzing} />
-
-      <footer className="bg-white border-t border-slate-200 pt-20 pb-10 px-6">
-        <div className="max-w-7xl mx-auto space-y-12">
-          <div className="flex flex-col md:flex-row justify-between items-start gap-12">
-             <div className="space-y-6 max-w-sm">
-                <div className="flex items-center gap-2 group cursor-pointer">
-                  <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-                    <TrendingUp className="text-white w-5 h-5" />
-                  </div>
-                  <span className="font-bold text-xl tracking-tight text-slate-800 underline underline-offset-4 decoration-indigo-200">PulseCV</span>
-                </div>
-                <p className="text-slate-500 text-sm leading-relaxed font-medium">
-                  Empowering candidates with industrial-grade AI to navigate the modern recruitment landscape. Your career, optimized.
-                </p>
-             </div>
-             <div className="grid grid-cols-2 md:grid-cols-3 gap-12">
-                <div className="space-y-4">
-                   <h4 className="font-bold text-slate-800 text-sm">Product</h4>
-                   <div className="flex flex-col gap-2 text-slate-500 text-sm font-semibold">
-                      <button type="button" onClick={scrollToInputs} className="text-left hover:text-indigo-600">ATS Analyzer</button>
-                      <a href="https://pulsecv.com/salary-estimator" target="_blank" rel="noreferrer" className="hover:text-indigo-600">Salary Estimator</a>
-                      <button type="button" onClick={scrollToInputs} className="text-left hover:text-indigo-600">JD Scraper</button>
-                   </div>
-                </div>
-                <div className="space-y-4">
-                   <h4 className="font-bold text-slate-800 text-sm">Company</h4>
-                   <div className="flex flex-col gap-2 text-slate-500 text-sm font-semibold">
-                      <a href="https://pulsecv.com/privacy" target="_blank" rel="noreferrer" className="hover:text-indigo-600">Privacy</a>
-                      <a href="https://pulsecv.com/terms" target="_blank" rel="noreferrer" className="hover:text-indigo-600">Terms</a>
-                      <a href="https://pulsecv.com/security" target="_blank" rel="noreferrer" className="hover:text-indigo-600">Security</a>
-                   </div>
-                </div>
-                <div className="space-y-4">
-                   <h4 className="font-bold text-slate-800 text-sm">Follow</h4>
-                   <div className="flex flex-col gap-2 text-slate-500 text-sm font-semibold">
-                      <a href="https://www.linkedin.com/company/pulsecv" target="_blank" rel="noreferrer" className="hover:text-indigo-600">LinkedIn</a>
-                      <a href="https://x.com/pulsecv" target="_blank" rel="noreferrer" className="hover:text-indigo-600">X (Twitter)</a>
-                   </div>
-                </div>
-             </div>
-          </div>
-          <div className="pt-10 border-t border-slate-100 flex flex-col md:flex-row justify-between items-center gap-6">
-             <p className="text-slate-400 text-xs font-bold uppercase tracking-widest">© 2026 PulseCV AI Decision Systems.</p>
-             <div className="flex items-center gap-4 text-slate-400">
-                <ShieldCheck className="w-5 h-5" />
-                <Globe className="w-5 h-5" />
-                <Smartphone className="w-5 h-5" />
-             </div>
-          </div>
-        </div>
-      </footer>
+      {isAnalyzing ? <LoadingOverlay stageIndex={stageIndex} /> : null}
     </div>
   );
 }
 
-// Immersive Scanner Visualization Component
-function ScanningOverlay({ word, isVisible }: { word: string; isVisible: boolean }) {
+function PricingCard({
+  tier,
+  price,
+  features,
+  accent,
+  premium,
+}: {
+  tier: string;
+  price: string;
+  features: string[];
+  accent: string;
+  premium?: boolean;
+}) {
   return (
-    <AnimatePresence>
-      {isVisible && (
-        <motion.div 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[200] bg-slate-900/95 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center overflow-hidden"
-        >
-          {/* Background Neural Grid (Simulated) */}
-          <div className="absolute inset-0 opacity-20">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-500/20 via-transparent to-transparent animate-pulse" />
-            <div className="h-full w-full bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:40px_40px]" />
+    <div className={`rounded-[2rem] border border-white/10 p-6 shadow-2xl ${accent}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.22em] opacity-70">{tier}</p>
+          <p className="mt-3 text-4xl font-black tracking-tight">{price}</p>
+        </div>
+        {premium ? (
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15">
+            <Crown className="h-5 w-5" />
           </div>
-
-          <div className="relative z-10 space-y-12 max-w-2xl w-full">
-            <div className="relative">
-              <motion.div 
-                animate={{ 
-                  scale: [1, 1.1, 1],
-                  rotate: [0, 5, -5, 0]
-                }}
-                transition={{ duration: 4, repeat: Infinity }}
-                className="w-32 h-32 bg-indigo-600 rounded-[2.5rem] flex items-center justify-center mx-auto shadow-[0_0_50px_rgba(79,70,229,0.5)] border border-indigo-400/50 relative overflow-hidden"
-              >
-                <RefreshCcw className="w-16 h-16 text-white animate-spin" strokeWidth={2.5} />
-                <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent animate-shimmer" />
-              </motion.div>
-              
-              {/* Floating Keywords Cluster */}
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={word}
-                  initial={{ opacity: 0, y: 20, scale: 0.8 }}
-                  animate={{ opacity: 1, y: 0, scale: 1.2 }}
-                  exit={{ opacity: 0, y: -20, scale: 0.8 }}
-                  className="absolute -top-16 left-1/2 -translate-x-1/2 whitespace-nowrap"
-                >
-                  <span className="text-indigo-400 font-mono text-xl font-black uppercase tracking-[0.3em] drop-shadow-[0_0_10px_rgba(129,140,248,0.5)]">
-                    {word}
-                  </span>
-                </motion.div>
-              </AnimatePresence>
-            </div>
-
-            <div className="space-y-4">
-              <h2 className="text-3xl md:text-5xl font-black text-white tracking-tight">
-                {word.match(/[\u0590-\u05FF]/) ? 'מנתח פרופיל נוירוני...' : 'Auditing Neural Profile...'}
-              </h2>
-              <div className="flex flex-col items-center gap-2">
-                <p className="text-indigo-300 font-mono text-sm uppercase tracking-widest animate-pulse">
-                  {word.match(/[\u0590-\u05FF]/) ? 'סורק מילות מפתח והתאמה...' : 'Scraping Data Segments & Heuristics...'}
-                </p>
-                <div className="w-64 h-1 bg-white/10 rounded-full mt-4 overflow-hidden relative">
-                  <motion.div 
-                    initial={{ x: '-100%' }}
-                    animate={{ x: '100%' }}
-                    transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
-                    className="absolute inset-0 bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.8)]"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 opacity-40">
-              {[0, 1, 2, 3].map(i => (
-                <div key={i} className="bg-white/5 border border-white/10 p-4 rounded-xl space-y-2">
-                  <div className="h-2 w-full bg-white/20 rounded animate-pulse" />
-                  <div className="h-2 w-2/3 bg-white/10 rounded animate-pulse" />
-                </div>
-              ))}
-            </div>
+        ) : null}
+      </div>
+      <div className="mt-6 space-y-3">
+        {features.map((feature) => (
+          <div key={feature} className="flex items-start gap-3 text-sm font-semibold leading-relaxed">
+            <BadgeCheck className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{feature}</span>
           </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        ))}
+      </div>
+      <button className={`mt-8 inline-flex w-full items-center justify-center rounded-[1.4rem] px-4 py-3 text-xs font-black uppercase tracking-[0.2em] ${premium ? "bg-white text-indigo-700" : "bg-slate-900 text-white"}`}>
+        {premium ? "Unlock premium" : "Current plan"}
+      </button>
+    </div>
+  );
+}
+
+function InsightBlock({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-[1.8rem] border border-slate-100 bg-slate-50/80 p-5">
+      <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">{title}</p>
+      <div className="mt-4 space-y-3">
+        {items.length ? items.map((item, index) => (
+          <div key={`${title}-${index}`} className="flex items-start gap-3 text-sm leading-relaxed text-slate-700">
+            <div className="mt-1 h-2.5 w-2.5 rounded-full bg-indigo-500" />
+            <span>{item}</span>
+          </div>
+        )) : (
+          <div className="text-sm text-slate-500">No items yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TrendingPulse() {
+  return <TrendingUpMini />;
+}
+
+function TrendingUpMini() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" className="h-6 w-6">
+      <path d="M4 16l5-5 4 4 7-8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15 7h5v5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
