@@ -54,7 +54,6 @@ def main() -> None:
             ".env",
             ".env.*",
             "node_modules/*",
-            "dist/*",
             "artifacts/*",
             "*.log",
             "server-validation*.log",
