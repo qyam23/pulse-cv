@@ -1,3 +1,13 @@
+---
+title: Pulse CV
+emoji: "📄"
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Pulse CV
 
 Pulse CV is now positioned as **Evidence-Based Hiring Intelligence** for industrial and manufacturing hiring.
