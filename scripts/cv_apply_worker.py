@@ -12,6 +12,8 @@ from docx.text.paragraph import Paragraph
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph as PdfParagraph, SimpleDocTemplate, Spacer
 
 BANNED_PHRASE_PATTERNS = [
@@ -44,6 +46,31 @@ BANNED_LINE_PATTERNS = [
     re.compile(r"^the cv should\b", re.I),
     re.compile(r"^the candidate should\b", re.I),
 ]
+
+UNICODE_FONT_NAME = "PulseUnicode"
+BOLD_UNICODE_FONT_NAME = "PulseUnicodeBold"
+
+
+def register_unicode_fonts() -> Tuple[str, str]:
+    regular_candidates = [
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("C:/Windows/Fonts/arial.ttf"),
+    ]
+    bold_candidates = [
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("C:/Windows/Fonts/arialbd.ttf"),
+    ]
+
+    regular = next((candidate for candidate in regular_candidates if candidate.exists()), None)
+    bold = next((candidate for candidate in bold_candidates if candidate.exists()), None)
+    if not regular:
+        return "Helvetica", "Helvetica-Bold"
+
+    if UNICODE_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(UNICODE_FONT_NAME, str(regular)))
+    if bold and BOLD_UNICODE_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(BOLD_UNICODE_FONT_NAME, str(bold)))
+    return UNICODE_FONT_NAME, BOLD_UNICODE_FONT_NAME if bold else UNICODE_FONT_NAME
 
 
 def normalize_text(value: str) -> str:
@@ -233,10 +260,11 @@ def apply_docx(request: Dict[str, Any]) -> Tuple[str, str, List[str]]:
 
 def build_pdf_story(text: str) -> List[Any]:
     styles = getSampleStyleSheet()
+    body_font, heading_font = register_unicode_fonts()
     body = ParagraphStyle(
         "PulseBody",
         parent=styles["BodyText"],
-        fontName="Helvetica",
+        fontName=body_font,
         fontSize=10.5,
         leading=14,
         spaceAfter=8,
@@ -244,7 +272,7 @@ def build_pdf_story(text: str) -> List[Any]:
     heading = ParagraphStyle(
         "PulseHeading",
         parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
+        fontName=heading_font,
         fontSize=12.5,
         leading=16,
         spaceBefore=10,
