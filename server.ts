@@ -14,12 +14,17 @@ import {
   previewJobDescription,
   previewResumeText,
 } from "./server/analysis/engine";
+import type { FitAnalysis } from "./server/analysis/types";
 import {
   readTelemetrySummary,
   recordProductEvent,
   recordQualityEvent,
 } from "./server/analytics/telemetry";
 import { manufacturingPack } from "./server/domain/manufacturingPack";
+import { buildCvEditPlan } from "./server/cvApply/editPlan";
+import { createGenerationRecord, featureFlagEnabled, runCvGenerationWorker } from "./server/cvApply/pythonWorker";
+import { readJobMetadata, writeJobMetadata } from "./server/cvApply/storage";
+import type { CvGenerateRequest, CvApplyPlanRequest } from "./server/cvApply/types";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,8 +34,9 @@ async function startServer() {
   const PORT = Number(process.env.PORT || 3000);
   const analysisCache = new Map<string, any>();
   const requirementPhraseCache = new Map<string, string[]>();
+  const generationStatus = new Map<string, any>();
 
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: "25mb" }));
 
   function getActiveProvider(): string {
     return (process.env.AI_PROVIDER || process.env.LLM_PROVIDER || "huggingface").toLowerCase();
@@ -855,6 +861,20 @@ async function startServer() {
       .filter((item: any) => item?.requirement?.mustHave).length;
   }
 
+  function validateApplyPlanRequest(body: any): body is CvApplyPlanRequest {
+    return Boolean(
+      body?.analysis &&
+      body?.resumeText &&
+      body?.sourceDocument?.fileName &&
+      body?.sourceDocument?.format &&
+      body?.sourceDocument?.base64,
+    );
+  }
+
+  function validateGenerateRequest(body: any): body is CvGenerateRequest {
+    return validateApplyPlanRequest(body) && Boolean((body as CvGenerateRequest)?.editPlan?.instructions && Array.isArray((body as CvGenerateRequest).editPlan.instructions));
+  }
+
   async function isSafeUrl(rawUrl: string): Promise<boolean> {
     try {
       const parsed = new URL(rawUrl);
@@ -1287,6 +1307,105 @@ Return JSON with this shape:
       ...payload,
     });
     return res.json({ ok: true });
+  });
+
+  app.post("/api/cv/apply-recommendations/plan", async (req, res) => {
+    if (!featureFlagEnabled("ENABLE_CV_APPLY_RECOMMENDATIONS", true)) {
+      return res.status(404).json({ error: "FEATURE_DISABLED", message: "CV apply recommendations is disabled." });
+    }
+    if (!validateApplyPlanRequest(req.body)) {
+      return res.status(400).json({ error: "INPUT_MISSING", message: "Analysis, resume text, and source document are required." });
+    }
+    const payload = req.body as CvApplyPlanRequest;
+    const editPlan = buildCvEditPlan(payload.analysis, payload.resumeText, payload.sourceDocument);
+    await recordProductEvent("cv.apply.plan", {
+      sourceFormat: payload.sourceDocument.format,
+      instructionCount: editPlan.instructions.length,
+      strategy: editPlan.strategy,
+    });
+    return res.json({
+      editPlan,
+      featureFlags: {
+        docx: featureFlagEnabled("ENABLE_DOCX_PATCH_PIPELINE", true),
+        pdf: featureFlagEnabled("ENABLE_PDF_PATCH_PIPELINE", true),
+        changeReport: featureFlagEnabled("ENABLE_CHANGE_REPORT", true),
+      },
+    });
+  });
+
+  app.post("/api/cv/apply-recommendations/generate", async (req, res) => {
+    if (!featureFlagEnabled("ENABLE_CV_APPLY_RECOMMENDATIONS", true)) {
+      return res.status(404).json({ error: "FEATURE_DISABLED", message: "CV apply recommendations is disabled." });
+    }
+    if (!validateGenerateRequest(req.body)) {
+      return res.status(400).json({ error: "INPUT_MISSING", message: "Edit plan, analysis, resume text, and source document are required." });
+    }
+    const payload = req.body as CvGenerateRequest;
+    if (payload.sourceDocument.format === "docx" && !featureFlagEnabled("ENABLE_DOCX_PATCH_PIPELINE", true)) {
+      return res.status(400).json({ error: "FEATURE_DISABLED", message: "DOCX patch pipeline is disabled." });
+    }
+    if (payload.sourceDocument.format === "pdf" && !featureFlagEnabled("ENABLE_PDF_PATCH_PIPELINE", true)) {
+      return res.status(400).json({ error: "FEATURE_DISABLED", message: "PDF patch pipeline is disabled." });
+    }
+
+    const record = createGenerationRecord(payload.sourceDocument.format);
+    generationStatus.set(record.jobId, record);
+    await writeJobMetadata(record);
+
+    try {
+      const completed = await runCvGenerationWorker(payload, record);
+      generationStatus.set(completed.jobId, completed);
+      await recordQualityEvent("cv.apply.generated", {
+        sourceFormat: payload.sourceDocument.format,
+        instructionCount: payload.editPlan.instructions.length,
+        warningCount: completed.warnings.length,
+      });
+      return res.json({
+        jobId: completed.jobId,
+        status: completed.status,
+        warnings: completed.warnings,
+        downloadUrl: `/api/cv/generation/${completed.jobId}/download`,
+        redlineUrl: featureFlagEnabled("ENABLE_CHANGE_REPORT", true) ? `/api/cv/generation/${completed.jobId}/redline` : null,
+      });
+    } catch (failed: any) {
+      generationStatus.set(record.jobId, failed);
+      await recordQualityEvent("cv.apply.failed", {
+        sourceFormat: payload.sourceDocument.format,
+        reason: failed.error || "worker_failed",
+      });
+      return res.status(500).json({
+        error: "GENERATION_FAILED",
+        message: failed.error || "Failed to generate updated CV.",
+        jobId: record.jobId,
+      });
+    }
+  });
+
+  app.get("/api/cv/generation/:jobId/status", async (req, res) => {
+    const existing = generationStatus.get(req.params.jobId) || (await readJobMetadata(req.params.jobId));
+    if (!existing) {
+      return res.status(404).json({ error: "NOT_FOUND", message: "Generation job not found." });
+    }
+    return res.json(existing);
+  });
+
+  app.get("/api/cv/generation/:jobId/download", async (req, res) => {
+    const existing = generationStatus.get(req.params.jobId) || (await readJobMetadata(req.params.jobId));
+    if (!existing?.downloadPath) {
+      return res.status(404).json({ error: "NOT_FOUND", message: "Generated file not found." });
+    }
+    return res.download(existing.downloadPath, existing.outputFileName || path.basename(existing.downloadPath));
+  });
+
+  app.get("/api/cv/generation/:jobId/redline", async (req, res) => {
+    const existing = generationStatus.get(req.params.jobId) || (await readJobMetadata(req.params.jobId));
+    if (!featureFlagEnabled("ENABLE_CHANGE_REPORT", true)) {
+      return res.status(404).json({ error: "FEATURE_DISABLED", message: "Change report is disabled." });
+    }
+    if (!existing?.redlinePath) {
+      return res.status(404).json({ error: "NOT_FOUND", message: "Change report not found." });
+    }
+    return res.download(existing.redlinePath, path.basename(existing.redlinePath));
   });
 
   // API to analyze resume using Hugging Face Thinking Model

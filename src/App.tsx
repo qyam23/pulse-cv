@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Crown,
   Database,
+  Download,
   Factory,
   FileSearch,
   FileText,
@@ -27,6 +28,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Wand2,
   Target,
   UploadCloud,
   X,
@@ -181,6 +183,58 @@ interface ParsePreview {
   jdQualityWarnings?: JDQualityWarning[];
 }
 
+type SourceFormat = "docx" | "pdf";
+
+interface ResumeSourceDocument {
+  fileName: string;
+  mimeType: string;
+  format: SourceFormat;
+  base64: string;
+  extractedText: string;
+  size: number;
+}
+
+interface CvEditInstruction {
+  id: string;
+  sectionId: string;
+  sectionLabel: string;
+  action: "replace_phrase" | "rewrite_bullet" | "insert_bullet" | "tighten_heading" | "normalize_format" | "leave_untouched";
+  targetText?: string;
+  replacementText?: string;
+  insertionAnchor?: string;
+  rationale: string;
+  linkedRequirementIds: string[];
+  confidence: number;
+  atsImpact?: "high" | "medium" | "low";
+  recruiterReadabilityImpact?: "high" | "medium" | "low";
+}
+
+interface CvSectionPlanSummary {
+  id: string;
+  label: string;
+  status: "will_change" | "unchanged" | "new_content";
+  summary: string;
+}
+
+interface CvEditPlan {
+  planId: string;
+  sourceFileName: string;
+  sourceFormat: SourceFormat;
+  strategy: "docx_surgical" | "pdf_recruiter_safe";
+  warnings: string[];
+  sections: CvSectionPlanSummary[];
+  instructions: CvEditInstruction[];
+  untouchedSections: string[];
+}
+
+interface CvGenerationResponse {
+  jobId: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  warnings: string[];
+  downloadUrl: string;
+  redlineUrl: string | null;
+}
+
 const LIVE_ANALYZER_URL = "https://qyam23-pulse-cv.hf.space/";
 const isStaticPagesRuntime =
   (import.meta as any).env?.VITE_STATIC_PREVIEW === "true" ||
@@ -203,6 +257,17 @@ function isRTL(text: string): boolean {
 
 function normalizeText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
 }
 
 function buildStaticPreviewAnalysis(resumeText: string, jobDescription: string): AnalysisResult {
@@ -632,6 +697,144 @@ function EvidenceMap({ rows }: { rows: EvidenceMapRow[] }) {
   );
 }
 
+function EditPlanModal({
+  open,
+  plan,
+  onClose,
+  onConfirm,
+  isGenerating,
+}: {
+  open: boolean;
+  plan: CvEditPlan | null;
+  onClose: () => void;
+  onConfirm: () => void;
+  isGenerating: boolean;
+}) {
+  if (!open || !plan) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-950/80 px-4 py-8"
+      >
+        <motion.div
+          initial={{ opacity: 0, y: 16, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 16, scale: 0.98 }}
+          className="max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-[2.5rem] border border-white/10 bg-white shadow-2xl"
+        >
+          <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5 md:px-8">
+            <div>
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-400">Post-analysis edit plan</p>
+              <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-900">Review exactly what Pulse CV will change</h3>
+            </div>
+            <button onClick={onClose} className="rounded-2xl border border-slate-200 p-3 text-slate-500 transition hover:bg-slate-50">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="grid max-h-[calc(90vh-170px)] gap-0 overflow-auto lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="border-b border-slate-100 bg-slate-50/70 p-6 lg:border-b-0 lg:border-r lg:p-8">
+              <div className="space-y-4">
+                <div className="rounded-[1.8rem] border border-slate-200 bg-white p-5">
+                  <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Generation strategy</p>
+                  <p className="mt-3 text-lg font-black text-slate-900">{plan.strategy === "docx_surgical" ? "DOCX surgical patching" : "Recruiter-safe PDF regeneration"}</p>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-500">Source file: {plan.sourceFileName}</p>
+                </div>
+
+                {plan.warnings.length ? (
+                  <div className="space-y-3">
+                    {plan.warnings.map((warning, index) => (
+                      <div key={`${warning}-${index}`} className="rounded-[1.8rem] border border-amber-200 bg-amber-50 p-4 text-sm font-semibold leading-relaxed text-amber-900">
+                        {warning}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="rounded-[1.8rem] border border-slate-200 bg-white p-5">
+                  <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Section impact</p>
+                  <div className="mt-4 space-y-3">
+                    {plan.sections.map((section) => (
+                      <div key={section.id} className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <p className="font-black text-slate-900">{section.label}</p>
+                          <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${
+                            section.status === "will_change"
+                              ? "bg-indigo-600 text-white"
+                              : section.status === "new_content"
+                                ? "bg-emerald-500 text-white"
+                                : "bg-slate-200 text-slate-700"
+                          }`}>
+                            {section.status.replace("_", " ")}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm leading-relaxed text-slate-500">{section.summary}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 md:p-8">
+              <div className="space-y-4">
+                {plan.instructions.length ? plan.instructions.map((instruction) => (
+                  <div key={instruction.id} className="rounded-[1.8rem] border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-white">
+                        {instruction.action.replace("_", " ")}
+                      </span>
+                      <p className="font-black text-slate-900">{instruction.sectionLabel}</p>
+                    </div>
+                    <p className="mt-3 text-sm leading-relaxed text-slate-500">{instruction.rationale}</p>
+                    {instruction.targetText ? (
+                      <div className="mt-4 rounded-2xl bg-slate-50 px-4 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Before</p>
+                        <p className="mt-2 text-sm leading-relaxed text-slate-600">{instruction.targetText}</p>
+                      </div>
+                    ) : null}
+                    {instruction.replacementText ? (
+                      <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700">After</p>
+                        <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-800">{instruction.replacementText}</p>
+                      </div>
+                    ) : null}
+                  </div>
+                )) : (
+                  <div className="rounded-[1.8rem] border border-slate-200 bg-slate-50 p-5 text-sm font-semibold text-slate-600">
+                    No safe surgical edits were generated from this analysis.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-slate-100 px-6 py-5 md:flex-row md:items-center md:justify-between md:px-8">
+            <p className="text-sm text-slate-500">Pulse CV will preserve untouched sections as much as possible and will not invent unsupported claims.</p>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <button onClick={onClose} className="rounded-[1.4rem] border border-slate-200 px-5 py-3 text-sm font-black text-slate-700">
+                Keep current CV
+              </button>
+              <button
+                onClick={onConfirm}
+                disabled={isGenerating || !plan.instructions.length}
+                className="inline-flex items-center justify-center gap-2 rounded-[1.4rem] bg-indigo-600 px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+                Generate updated CV
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 function LoadingOverlay({ stageIndex }: { stageIndex: number }) {
   return (
     <AnimatePresence>
@@ -674,12 +877,18 @@ export default function App() {
   const [resumeText, setResumeText] = useState("");
   const [jobDescription, setJobDescription] = useState("");
   const [jobUrl, setJobUrl] = useState("");
+  const [resumeSourceDocument, setResumeSourceDocument] = useState<ResumeSourceDocument | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [parsePreview, setParsePreview] = useState<ParsePreview | null>(null);
+  const [editPlan, setEditPlan] = useState<CvEditPlan | null>(null);
+  const [generationJob, setGenerationJob] = useState<CvGenerationResponse | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isReadingFile, setIsReadingFile] = useState(false);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const [isPreviewingJd, setIsPreviewingJd] = useState(false);
+  const [isPlanningCvUpdate, setIsPlanningCvUpdate] = useState(false);
+  const [isGeneratingCv, setIsGeneratingCv] = useState(false);
+  const [isEditPlanOpen, setIsEditPlanOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copyBioLabel, setCopyBioLabel] = useState("Copy evidence-based bio");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -706,6 +915,8 @@ export default function App() {
     setTimeout(() => setCopyBioLabel("Copy evidence-based bio"), 1800);
   }, [result]);
 
+  const canApplyRecommendations = Boolean(result && resumeSourceDocument && !isStaticPagesRuntime);
+
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -713,8 +924,9 @@ export default function App() {
     setIsReadingFile(true);
     setError(null);
     try {
+      const arrayBuffer = await file.arrayBuffer();
+      const base64 = arrayBufferToBase64(arrayBuffer);
       if (file.type === "application/pdf") {
-        const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
         let fullText = "";
         for (let page = 1; page <= pdf.numPages; page += 1) {
@@ -724,13 +936,30 @@ export default function App() {
         }
         if (!fullText.trim()) throw new Error("Could not extract text from PDF.");
         setResumeText(fullText.trim());
+        setResumeSourceDocument({
+          fileName: file.name,
+          mimeType: file.type || "application/pdf",
+          format: "pdf",
+          base64,
+          extractedText: fullText.trim(),
+          size: file.size,
+        });
       } else if (file.name.endsWith(".docx") || file.type.includes("wordprocessingml")) {
-        const arrayBuffer = await file.arrayBuffer();
         const { value } = await mammoth.extractRawText({ arrayBuffer });
         setResumeText(value.trim());
+        setResumeSourceDocument({
+          fileName: file.name,
+          mimeType: file.type || "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          format: "docx",
+          base64,
+          extractedText: value.trim(),
+          size: file.size,
+        });
       } else {
         throw new Error("Use PDF or Word (.docx) files.");
       }
+      setEditPlan(null);
+      setGenerationJob(null);
     } catch (err: any) {
       setError(err.message || "Failed to read the uploaded file.");
     } finally {
@@ -794,6 +1023,61 @@ export default function App() {
     }
   }, [jobDescription, resumeText]);
 
+  const previewApplyRecommendations = useCallback(async () => {
+    if (!result || !resumeSourceDocument) return;
+    setIsPlanningCvUpdate(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/cv/apply-recommendations/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          analysis: result,
+          resumeText,
+          sourceDocument: resumeSourceDocument,
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const data = await response.json();
+      setEditPlan(data.editPlan);
+      setIsEditPlanOpen(true);
+    } catch (err: any) {
+      setError(err.message || "Could not prepare the CV edit plan.");
+    } finally {
+      setIsPlanningCvUpdate(false);
+    }
+  }, [result, resumeSourceDocument, resumeText]);
+
+  const generateUpdatedCv = useCallback(async () => {
+    if (!result || !resumeSourceDocument || !editPlan) return;
+    setIsGeneratingCv(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/cv/apply-recommendations/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          analysis: result,
+          resumeText,
+          sourceDocument: resumeSourceDocument,
+          editPlan,
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const data = (await response.json()) as CvGenerationResponse;
+      setGenerationJob(data);
+      setIsEditPlanOpen(false);
+    } catch (err: any) {
+      setError(err.message || "Could not generate the updated CV.");
+    } finally {
+      setIsGeneratingCv(false);
+    }
+  }, [result, resumeSourceDocument, editPlan, resumeText]);
+
+  const downloadGeneratedAsset = useCallback((url: string) => {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }, []);
+
   const analyze = useCallback(async () => {
     if (!resumeText || !jobDescription) {
       setError("Please provide both the resume and the target job description.");
@@ -802,6 +1086,8 @@ export default function App() {
     setIsAnalyzing(true);
     setError(null);
     setResult(null);
+    setEditPlan(null);
+    setGenerationJob(null);
 
     if (isStaticPagesRuntime) {
       window.setTimeout(() => {
@@ -987,6 +1273,11 @@ export default function App() {
                 </label>
               </div>
               <div className="p-6">
+                {resumeSourceDocument ? (
+                  <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">
+                    Source file: <span className="font-black text-slate-900">{resumeSourceDocument.fileName}</span> · output format will stay <span className="font-black text-slate-900">{resumeSourceDocument.format.toUpperCase()}</span>
+                  </div>
+                ) : null}
                 <textarea
                   value={resumeText}
                   onChange={(event) => setResumeText(event.target.value)}
@@ -1202,6 +1493,71 @@ export default function App() {
               </div>
             </div>
 
+            {canApplyRecommendations ? (
+              <div className="rounded-[2.8rem] border border-slate-200 bg-white p-8 shadow-sm">
+                <SectionHeader
+                  icon={Wand2}
+                  title="Apply recommendations"
+                  subtitle="Generate an updated CV from the original uploaded file, review the edit plan first, then download the updated version and the change report."
+                />
+                <div className="mt-6 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
+                  <div className="rounded-[1.8rem] border border-slate-200 bg-slate-50/80 p-5">
+                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Source document</p>
+                    <p className="mt-3 text-lg font-black text-slate-900">{resumeSourceDocument?.fileName}</p>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-500">
+                      {resumeSourceDocument?.format === "docx"
+                        ? "Pulse CV will use a DOCX-first surgical patch path with style retention."
+                        : "Pulse CV will use a recruiter-safe PDF regeneration path and warn if exact layout cannot be preserved."}
+                    </p>
+                  </div>
+                  <button
+                    onClick={previewApplyRecommendations}
+                    disabled={isPlanningCvUpdate}
+                    className="inline-flex items-center justify-center gap-2 rounded-[1.6rem] bg-indigo-600 px-6 py-4 text-sm font-black text-white shadow-lg shadow-indigo-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isPlanningCvUpdate ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+                    Apply recommendations
+                  </button>
+                </div>
+
+                {generationJob ? (
+                  <div className="mt-6 grid gap-4 rounded-[2rem] border border-emerald-200 bg-emerald-50 p-5 md:grid-cols-[1fr_auto] md:items-center">
+                    <div>
+                      <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-700">Updated CV ready</p>
+                      <p className="mt-2 text-sm leading-relaxed text-emerald-900">
+                        The updated CV is ready to download. You can also download the change report to review every touched section.
+                      </p>
+                      {generationJob.warnings.length ? (
+                        <div className="mt-3 space-y-2">
+                          {generationJob.warnings.map((warning, index) => (
+                            <div key={`${warning}-${index}`} className="text-sm font-semibold text-amber-800">{warning}</div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-col gap-3 sm:flex-row">
+                      <button
+                        onClick={() => downloadGeneratedAsset(generationJob.downloadUrl)}
+                        className="inline-flex items-center justify-center gap-2 rounded-[1.4rem] bg-slate-900 px-5 py-3 text-sm font-black text-white"
+                      >
+                        <Download className="h-4 w-4" />
+                        Download updated CV
+                      </button>
+                      {generationJob.redlineUrl ? (
+                        <button
+                          onClick={() => downloadGeneratedAsset(generationJob.redlineUrl!)}
+                          className="inline-flex items-center justify-center gap-2 rounded-[1.4rem] border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-700"
+                        >
+                          <FileText className="h-4 w-4" />
+                          Download change report
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="grid gap-8 xl:grid-cols-[1fr_0.92fr]">
               <div className="space-y-8">
                 <div className="rounded-[2.5rem] border border-slate-200 bg-white p-8 shadow-sm">
@@ -1416,6 +1772,14 @@ export default function App() {
           </motion.section>
         ) : null}
       </main>
+
+      <EditPlanModal
+        open={isEditPlanOpen}
+        plan={editPlan}
+        onClose={() => setIsEditPlanOpen(false)}
+        onConfirm={generateUpdatedCv}
+        isGenerating={isGeneratingCv}
+      />
 
       {isAnalyzing ? <LoadingOverlay stageIndex={stageIndex} /> : null}
     </div>

@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "benchmark:manufacturing": "tsx scripts/run-manufacturing-benchmark.ts"
+    "benchmark:manufacturing": "tsx scripts/run-manufacturing-benchmark.ts",
+    "test:cv-apply-sanitization": "tsx scripts/test_cv_output_sanitization.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
