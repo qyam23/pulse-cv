@@ -69,7 +69,7 @@ export async function runCvGenerationWorker(payload: CvGenerateRequest, record: 
     "utf-8",
   );
 
-  const pythonBin = process.env.PYTHON_EXECUTABLE || "python";
+  const pythonBin = process.env.PYTHON_EXECUTABLE || (process.platform === "win32" ? "python" : "python3");
   const workerPath = path.join(process.cwd(), "scripts", "cv_apply_worker.py");
   record.status = "processing";
   record.updatedAt = new Date().toISOString();
