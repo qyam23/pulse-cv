@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import mammoth from "mammoth";
 
 const LIVE_SPACE_URL = "https://qyam23-pulse-cv.hf.space";
 const ORIGINAL_CV_PATH = "C:\\Users\\user\\Downloads\\קורות חיים\\new120426\\יובל-סטרוסטה קורות חיים.pdf";
-const OUTPUT_ROOT = path.join(process.cwd(), "artifacts", "live-space-consistency");
-const REPORT_PATH = path.join(process.cwd(), "docs", "live-space-consistency-test-report.md");
+const RUN_ID = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+const OUTPUT_ROOT = path.join(process.cwd(), "artifacts", `live-space-consistency-rerun-${RUN_ID}`);
+const REPORT_PATH = path.join(process.cwd(), "docs", "live-space-consistency-rerun-report.md");
 
 const JD_TEXT = `About the job
 What we are looking for:
@@ -153,6 +155,11 @@ async function extractPdfText(input: string | Uint8Array): Promise<string> {
   return pages.join("\n").replace(/\s+\n/g, "\n").trim();
 }
 
+async function extractDocxText(filePath: string): Promise<string> {
+  const result = await mammoth.extractRawText({ path: filePath });
+  return result.value.replace(/\s+/g, " ").trim();
+}
+
 function countMissing(analysis: Analysis): number {
   return Object.values(analysis.missingRequirementsByType || {}).reduce((sum, list) => sum + list.length, 0);
 }
@@ -282,9 +289,15 @@ async function runCycle(cycle: number, originalText: string, sourceBase64: strin
     };
   }
 
+  const statusResponse = await fetchJson(`${LIVE_SPACE_URL}/api/cv/generation/${generateResponse.jobId}/status`);
+  await fs.writeFile(path.join(cycleDir, "generation-status.json"), JSON.stringify(statusResponse, null, 2), "utf8");
+
   const downloadUrl = `${LIVE_SPACE_URL}${generateResponse.downloadUrl}`;
   const updatedBytes = await downloadBinary(downloadUrl);
-  const updatedFile = path.join(cycleDir, "updated-cv.pdf");
+  const outputFileName = String(statusResponse.outputFileName || "");
+  const outputMimeType = String(statusResponse.outputMimeType || "");
+  const isDocx = outputMimeType.includes("wordprocessingml") || outputFileName.toLowerCase().endsWith(".docx");
+  const updatedFile = path.join(cycleDir, isDocx ? "updated-cv.docx" : "updated-cv.pdf");
   await fs.writeFile(updatedFile, updatedBytes);
 
   let redlineFile: string | null = null;
@@ -294,7 +307,7 @@ async function runCycle(cycle: number, originalText: string, sourceBase64: strin
     await fs.writeFile(redlineFile, redlineBytes);
   }
 
-  const updatedText = await extractPdfText(updatedBytes);
+  const updatedText = isDocx ? await extractDocxText(updatedFile) : await extractPdfText(updatedBytes);
   const leakageFound = hasInstructionLeakage(updatedText);
   if (leakageFound) {
     notes.push("Instruction leakage detected in generated PDF text.");
@@ -320,7 +333,7 @@ async function runCycle(cycle: number, originalText: string, sourceBase64: strin
     applyButtonEquivalent: "available",
     editPlanShown,
     generationSucceeded: generateResponse.status === "completed",
-    outputFormat: "pdf",
+    outputFormat: isDocx ? "docx" : "pdf",
     leakageFound,
     improvement: didImprove,
     notes,

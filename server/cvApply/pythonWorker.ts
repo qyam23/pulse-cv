@@ -82,12 +82,13 @@ export async function runCvGenerationWorker(payload: CvGenerateRequest, record: 
       maxBuffer: 10 * 1024 * 1024,
     });
     const result = JSON.parse(stdout.trim());
+    const downloadPath = result.outputPath || outputPath;
     const updatedRecord: CvGenerationRecord = {
       ...record,
       status: "completed",
       outputFileName: result.outputFileName,
       outputMimeType: result.outputMimeType,
-      downloadPath: outputPath,
+      downloadPath,
       redlinePath,
       warnings: Array.from(new Set([...(result.warnings || []), ...planValidationWarnings])),
       updatedAt: new Date().toISOString(),

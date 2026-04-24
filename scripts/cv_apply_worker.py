@@ -301,12 +301,26 @@ def build_pdf_story(text: str) -> List[Any]:
     return story
 
 
+def build_docx_from_text(output_path: Path, text: str) -> None:
+    document = Document()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            document.add_paragraph("")
+            continue
+        paragraph = document.add_paragraph(line)
+        if len(line) < 45:
+            for run in paragraph.runs:
+                run.bold = True
+    document.save(str(output_path))
+
+
 def apply_pdf(request: Dict[str, Any]) -> Tuple[str, str, List[str]]:
-    output_path = Path(request["outputPath"])
+    output_path = Path(request["outputPath"]).with_suffix(".docx")
     text = request["resumeText"]
     instructions = request["editPlan"]["instructions"]
     warnings = [
-        "PDF output was regenerated in recruiter-safe mode. Exact original layout was not preserved."
+        "Source PDF was converted to an ATS-safe DOCX because Hebrew PDF regeneration can damage text extraction order."
     ]
     before_after: List[Dict[str, str]] = []
     updated_text = text
@@ -333,10 +347,9 @@ def apply_pdf(request: Dict[str, Any]) -> Tuple[str, str, List[str]]:
                 updated_text += f"\n• {replacement}"
 
     validate_final_cv_output(updated_text)
-    doc = SimpleDocTemplate(str(output_path), pagesize=A4, leftMargin=1.8 * cm, rightMargin=1.8 * cm, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
-    doc.build(build_pdf_story(updated_text))
+    build_docx_from_text(output_path, updated_text)
     build_redline(Path(request["redlinePath"]), instructions, before_after, warnings)
-    return output_path.name, "application/pdf", warnings
+    return output_path.name, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", warnings
 
 
 def main() -> None:
@@ -350,6 +363,7 @@ def main() -> None:
     print(json.dumps({
         "outputFileName": output_file_name,
         "outputMimeType": mime_type,
+        "outputPath": str(Path(request["outputPath"]).with_suffix(".docx")) if source_format == "pdf" else str(Path(request["outputPath"])),
         "warnings": warnings,
     }))
 
