@@ -1312,7 +1312,7 @@ export default function App() {
                     className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-slate-900 px-5 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {isFetchingUrl ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
-                    Fetch
+                    link
                   </button>
                 </div>
               </div>
