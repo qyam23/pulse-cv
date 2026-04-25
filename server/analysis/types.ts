@@ -155,6 +155,8 @@ export interface AnalysisMeta {
   vertical: string;
   generatedAt: string;
   inputHash: string;
+  resumeLanguage?: "he" | "en" | "mixed" | "unknown";
+  resumeLanguageConfidence?: number;
 }
 
 export interface FitAnalysis {

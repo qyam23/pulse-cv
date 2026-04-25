@@ -21,6 +21,7 @@ import {
   recordQualityEvent,
 } from "./server/analytics/telemetry";
 import { manufacturingPack } from "./server/domain/manufacturingPack";
+import { detectTextLanguage, languageCompatible, languageLabel, type TextLanguage } from "./server/analysis/language";
 import { buildCvEditPlan } from "./server/cvApply/editPlan";
 import { createGenerationRecord, featureFlagEnabled, runCvGenerationWorker } from "./server/cvApply/pythonWorker";
 import { readJobMetadata, writeJobMetadata } from "./server/cvApply/storage";
@@ -976,6 +977,8 @@ async function startServer() {
   }
 
   function buildExplanationPrompt(resumeText: string, jobDescription: string, analysis: any): string {
+    const resumeLanguage = detectTextLanguage(resumeText);
+    const targetLanguage = languageLabel(resumeLanguage.language);
     return `
 <instruction>
 You are Pulse CV's explanation layer for evidence-based hiring intelligence.
@@ -986,7 +989,9 @@ Rules:
 2. Do not invent experience, tools, responsibilities, or education not present in the CV.
 3. Keep the response grounded in the provided evidence and uncertainty flags.
 4. Return JSON only.
-5. If the content is Hebrew, answer in Hebrew. If English, answer in English.
+5. Write all user-facing strings in the resume language: ${targetLanguage}.
+6. If the resume language is uncertain, keep the dominant resume language and do not translate the CV.
+7. Never translate a Hebrew CV to English or an English CV to Hebrew.
 </instruction>
 
 <deterministic_analysis>
@@ -1040,29 +1045,42 @@ Return JSON with this shape:
       : [];
   }
 
-  function mergeRecommendationBlock(deterministicBlock: any, aiBlock: any) {
+  function filterLanguageStrings(items: string[], targetLanguage: TextLanguage): string[] {
+    return items.filter((item) => languageCompatible(targetLanguage, item));
+  }
+
+  function mergeRecommendationBlock(deterministicBlock: any, aiBlock: any, targetLanguage: TextLanguage) {
     if (!aiBlock || typeof aiBlock !== "object") return deterministicBlock;
+    const wordingFixes = filterLanguageStrings(asStringArray(aiBlock.wordingFixes), targetLanguage);
+    const proofGaps = filterLanguageStrings(asStringArray(aiBlock.proofGaps), targetLanguage);
+    const likelyInterviewQuestions = filterLanguageStrings(asStringArray(aiBlock.likelyInterviewQuestions), targetLanguage);
+    const titleAlignmentSuggestions = filterLanguageStrings(asStringArray(aiBlock.titleAlignmentSuggestions), targetLanguage);
     return {
       ...deterministicBlock,
-      wordingFixes: asStringArray(aiBlock.wordingFixes).length ? asStringArray(aiBlock.wordingFixes) : deterministicBlock.wordingFixes,
-      proofGaps: asStringArray(aiBlock.proofGaps).length ? asStringArray(aiBlock.proofGaps) : deterministicBlock.proofGaps,
-      likelyInterviewQuestions: asStringArray(aiBlock.likelyInterviewQuestions).length ? asStringArray(aiBlock.likelyInterviewQuestions) : deterministicBlock.likelyInterviewQuestions,
-      titleAlignmentSuggestions: asStringArray(aiBlock.titleAlignmentSuggestions).length ? asStringArray(aiBlock.titleAlignmentSuggestions) : deterministicBlock.titleAlignmentSuggestions,
+      wordingFixes: wordingFixes.length ? wordingFixes : deterministicBlock.wordingFixes,
+      proofGaps: proofGaps.length ? proofGaps : deterministicBlock.proofGaps,
+      likelyInterviewQuestions: likelyInterviewQuestions.length ? likelyInterviewQuestions : deterministicBlock.likelyInterviewQuestions,
+      titleAlignmentSuggestions: titleAlignmentSuggestions.length ? titleAlignmentSuggestions : deterministicBlock.titleAlignmentSuggestions,
     };
   }
 
-  function mergeRecruiterRecommendationBlock(deterministicBlock: any, aiBlock: any) {
+  function mergeRecruiterRecommendationBlock(deterministicBlock: any, aiBlock: any, targetLanguage: TextLanguage) {
     if (!aiBlock || typeof aiBlock !== "object") return deterministicBlock;
+    const verifyManually = filterLanguageStrings(asStringArray(aiBlock.verifyManually), targetLanguage);
+    const weakEvidenceZones = filterLanguageStrings(asStringArray(aiBlock.weakEvidenceZones), targetLanguage);
+    const interviewProbes = filterLanguageStrings(asStringArray(aiBlock.interviewProbes), targetLanguage);
+    const possibleFalseNegatives = filterLanguageStrings(asStringArray(aiBlock.possibleFalseNegatives), targetLanguage);
     return {
       ...deterministicBlock,
-      verifyManually: asStringArray(aiBlock.verifyManually).length ? asStringArray(aiBlock.verifyManually) : deterministicBlock.verifyManually,
-      weakEvidenceZones: asStringArray(aiBlock.weakEvidenceZones).length ? asStringArray(aiBlock.weakEvidenceZones) : deterministicBlock.weakEvidenceZones,
-      interviewProbes: asStringArray(aiBlock.interviewProbes).length ? asStringArray(aiBlock.interviewProbes) : deterministicBlock.interviewProbes,
-      possibleFalseNegatives: asStringArray(aiBlock.possibleFalseNegatives).length ? asStringArray(aiBlock.possibleFalseNegatives) : deterministicBlock.possibleFalseNegatives,
+      verifyManually: verifyManually.length ? verifyManually : deterministicBlock.verifyManually,
+      weakEvidenceZones: weakEvidenceZones.length ? weakEvidenceZones : deterministicBlock.weakEvidenceZones,
+      interviewProbes: interviewProbes.length ? interviewProbes : deterministicBlock.interviewProbes,
+      possibleFalseNegatives: possibleFalseNegatives.length ? possibleFalseNegatives : deterministicBlock.possibleFalseNegatives,
     };
   }
 
   function mergeDeterministicTruth(deterministic: any, aiResult: any, provider: string, model?: string) {
+    const targetLanguage: TextLanguage = deterministic?.analysisMeta?.resumeLanguage || "unknown";
     const aiBulletOptimizations = Array.isArray(aiResult?.bulletPointOptimization)
       ? aiResult.bulletPointOptimization
           .map((item: any) => ({
@@ -1071,16 +1089,23 @@ Return JSON with this shape:
             rationale: String(item?.rationale || "").trim(),
           }))
           .filter((item: any) => item.original && item.optimized)
+          .filter((item: any) => languageCompatible(targetLanguage, item.optimized) && languageCompatible(targetLanguage, item.rationale))
           .slice(0, 4)
       : [];
+    const profileSummary = typeof aiResult?.profileSummary === "string" && aiResult.profileSummary.trim() && languageCompatible(targetLanguage, aiResult.profileSummary)
+      ? aiResult.profileSummary.trim()
+      : deterministic.profileSummary;
+    const tailoredBio = typeof aiResult?.tailoredBio === "string" && aiResult.tailoredBio.trim() && languageCompatible(targetLanguage, aiResult.tailoredBio)
+      ? aiResult.tailoredBio.trim()
+      : deterministic.tailoredBio;
 
     return {
       ...deterministic,
-      profileSummary: typeof aiResult?.profileSummary === "string" && aiResult.profileSummary.trim() ? aiResult.profileSummary.trim() : deterministic.profileSummary,
-      tailoredBio: typeof aiResult?.tailoredBio === "string" && aiResult.tailoredBio.trim() ? aiResult.tailoredBio.trim() : deterministic.tailoredBio,
+      profileSummary,
+      tailoredBio,
       bulletPointOptimization: aiBulletOptimizations.length ? aiBulletOptimizations : deterministic.bulletPointOptimization,
-      candidateRecommendations: mergeRecommendationBlock(deterministic.candidateRecommendations, aiResult?.candidateRecommendations),
-      recruiterRecommendations: mergeRecruiterRecommendationBlock(deterministic.recruiterRecommendations, aiResult?.recruiterRecommendations),
+      candidateRecommendations: mergeRecommendationBlock(deterministic.candidateRecommendations, aiResult?.candidateRecommendations, targetLanguage),
+      recruiterRecommendations: mergeRecruiterRecommendationBlock(deterministic.recruiterRecommendations, aiResult?.recruiterRecommendations, targetLanguage),
       recommendations: deterministic.recommendations,
       provider,
       model,

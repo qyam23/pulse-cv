@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { FitAnalysis, RequirementMatch } from "../analysis/types";
+import { detectTextLanguage, languageCompatible, languageLabel, type TextLanguage } from "../analysis/language";
 import type { CvEditInstruction, CvEditPlan, CvSectionPlanSummary, ResumeSourceDocumentPayload } from "./types";
 import { prepareSafeEditPlan, sanitizeRecruiterFacingText } from "./finalContent";
 
@@ -107,8 +108,10 @@ function collectLinkedRequirementIds(matches: RequirementMatch[], limit = 3): st
 function buildSummaryInstruction(
   analysis: FitAnalysis,
   sections: ResumeSection[],
+  targetLanguage: TextLanguage,
 ): CvEditInstruction | null {
   if (!analysis.tailoredBio?.trim()) return null;
+  if (!languageCompatible(targetLanguage, analysis.tailoredBio)) return null;
   const sanitizedBio = sanitizeRecruiterFacingText(analysis.tailoredBio.trim());
   if (sanitizedBio.rejected) return null;
   const summarySection = firstSectionByLabel(sections, "Profile");
@@ -155,6 +158,7 @@ function buildBulletInstructions(
   analysis: FitAnalysis,
   sections: ResumeSection[],
   _resumeText: string,
+  targetLanguage: TextLanguage,
 ): CvEditInstruction[] {
   const findSourceSection = (target: string) =>
     sections.find((section) => section.lines.some((line) => {
@@ -174,7 +178,7 @@ function buildBulletInstructions(
     .filter(({ sourceSection }) => sourceSection?.label !== "Profile")
     .map(({ item, sourceSection }) => {
       const sanitized = sanitizeRecruiterFacingText(item.optimized.trim());
-      return sanitized.rejected
+      return sanitized.rejected || !languageCompatible(targetLanguage, sanitized.text)
         ? null
         : { item: { ...item, optimized: sanitized.text }, sourceSection };
     })
@@ -236,12 +240,13 @@ export function buildCvEditPlan(
   sourceDocument: ResumeSourceDocumentPayload,
 ): CvEditPlan {
   const sections = extractSections(resumeText);
+  const resumeLanguage = detectTextLanguage(resumeText);
   const instructions: CvEditInstruction[] = [];
 
-  const summaryInstruction = buildSummaryInstruction(analysis, sections);
+  const summaryInstruction = buildSummaryInstruction(analysis, sections, resumeLanguage.language);
   if (summaryInstruction) instructions.push(summaryInstruction);
 
-  instructions.push(...buildBulletInstructions(analysis, sections, resumeText));
+  instructions.push(...buildBulletInstructions(analysis, sections, resumeText, resumeLanguage.language));
 
   const skillsInstruction = buildSkillsInstruction(analysis, sections, resumeText);
   if (skillsInstruction) instructions.push(skillsInstruction);
@@ -266,6 +271,10 @@ export function buildCvEditPlan(
   }
 
   const warnings: string[] = [];
+  warnings.push(`Detected resume language: ${languageLabel(resumeLanguage.language)} (${Math.round(resumeLanguage.confidence * 100)}% confidence). Output wording is locked to the resume language.`);
+  if (resumeLanguage.language === "unknown" || resumeLanguage.confidence < 0.55) {
+    warnings.push("Resume language detection is uncertain. The user should review the Word output and manually adjust language if needed.");
+  }
   if (sourceDocument.format === "pdf") {
     warnings.push("PDF output uses a recruiter-safe DOCX regeneration path. Exact Word layout preservation requires uploading the original DOCX file.");
     warnings.push("If the source was a PDF, the exported Word file prioritizes ATS readability, content order, and writing style over pixel-perfect visual design.");

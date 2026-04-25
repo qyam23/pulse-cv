@@ -11,6 +11,7 @@ import {
   unique,
 } from "./normalization";
 import { lintJobDescription } from "./jdLinter";
+import { detectTextLanguage, type TextLanguage } from "./language";
 import type {
   AnalysisMeta,
   CandidateRecommendations,
@@ -664,9 +665,22 @@ function uncertaintyFlags(matches: RequirementMatch[], warnings: JDQualityWarnin
   return flags;
 }
 
-function buildCandidateRecommendations(matches: RequirementMatch[], domain: DomainDetection): CandidateRecommendations {
+function buildCandidateRecommendations(matches: RequirementMatch[], domain: DomainDetection, language: TextLanguage): CandidateRecommendations {
   const missing = matches.filter((match) => match.state === "missing").slice(0, 4);
   const weak = matches.filter((match) => match.state === "weakly_supported" || match.state === "uncertain").slice(0, 3);
+  if (language === "he" || language === "mixed") {
+    return {
+      wordingFixes: weak.map((match) => `חזק את הניסוח סביב ${match.requirement.label} בעזרת פרויקט, היקף אחריות או תוצאה מדידה, רק אם זה נכון ומגובה בקורות החיים.`),
+      proofGaps: missing.map((match) => `לא נמצאה ראיה ברורה ל-${match.requirement.label}. זה לא פער ניסוח בלבד אלא אם קיימת לך ראיה אמיתית שאפשר להציג.`),
+      likelyInterviewQuestions: manufacturingPack.interviewQuestionTemplates.slice(0, 2).concat(
+        weak.map((match) => `היה מוכן להסביר איפה קורות החיים מוכיחים את ${match.requirement.label}.`)
+      ).slice(0, 4),
+      titleAlignmentSuggestions: [
+        `כוון את הכותרת המקצועית למשפחת התפקיד: ${domain.roleFamily.replace(/_/g, " ")}.`,
+        "אם התפקיד דורש הובלה הנדסית/ייצורית, ודא שהיקף ההובלה האחרון מופיע בחלק העליון של קורות החיים."
+      ]
+    };
+  }
   return {
     wordingFixes: weak.map((match) => `Strengthen the wording around ${match.requirement.label} with a concrete project, scope, or result if it is true.`),
     proofGaps: missing.map((match) => `There is no clear evidence for ${match.requirement.label}. This is not fixable by wording unless you can cite real experience.`),
@@ -694,7 +708,7 @@ function buildRecruiterRecommendations(matches: RequirementMatch[]): RecruiterRe
   };
 }
 
-function buildSummary(matches: RequirementMatch[], scoring: ScoringBreakdown, domain: DomainDetection): { profileSummary: string; tailoredBio: string; strengths: string[]; weaknesses: string[]; recommendations: string[] } {
+function buildSummary(matches: RequirementMatch[], scoring: ScoringBreakdown, domain: DomainDetection, language: TextLanguage): { profileSummary: string; tailoredBio: string; strengths: string[]; weaknesses: string[]; recommendations: string[] } {
   const strengths = matches
     .filter((match) => match.state === "matched" || match.state === "partially_matched")
     .sort((left, right) => right.requirement.importance - left.requirement.importance)
@@ -705,9 +719,15 @@ function buildSummary(matches: RequirementMatch[], scoring: ScoringBreakdown, do
     .sort((left, right) => Number(right.requirement.mustHave) - Number(left.requirement.mustHave) || right.requirement.importance - left.requirement.importance)
     .slice(0, 5)
     .map((match) => match.requirement.label);
-  const recommendations = weaknesses.map((item) => `Clarify or prove ${item} with direct, recent evidence if it is true.`);
-  const profileSummary = `The role sits in ${domain.primaryDomain.replace(/_/g, " ")} / ${domain.roleFamily.replace(/_/g, " ")}. The analysis found ${strengths.length} strong evidence-backed matches and ${weaknesses.length} real gaps or uncertain zones. Final fit should be read together with evidence strength and must-have coverage, not score alone.`;
-  const tailoredBio = `Manufacturing and industrial engineering professional with proven scope in ${domain.roleFamily.replace(/_/g, " ")} environments, combining process ownership, engineering tools, operational improvement, and leadership signals that are supported by the CV.`;
+  const recommendations = language === "he" || language === "mixed"
+    ? weaknesses.map((item) => `הבהר או הוכח את ${item} באמצעות ראיה ישירה ועדכנית, רק אם זה נכון.`)
+    : weaknesses.map((item) => `Clarify or prove ${item} with direct, recent evidence if it is true.`);
+  const profileSummary = language === "he" || language === "mixed"
+    ? `התפקיד מזוהה בדומיין ${domain.primaryDomain.replace(/_/g, " ")} / ${domain.roleFamily.replace(/_/g, " ")}. נמצאו ${strengths.length} התאמות חזקות שמגובות בראיות ו-${weaknesses.length} פערים אמיתיים או אזורי אי-ודאות. יש לקרוא את ההתאמה יחד עם חוזק הראיות וכיסוי דרישות החובה, ולא לפי הציון בלבד.`
+    : `The role sits in ${domain.primaryDomain.replace(/_/g, " ")} / ${domain.roleFamily.replace(/_/g, " ")}. The analysis found ${strengths.length} strong evidence-backed matches and ${weaknesses.length} real gaps or uncertain zones. Final fit should be read together with evidence strength and must-have coverage, not score alone.`;
+  const tailoredBio = language === "he" || language === "mixed"
+    ? `מנהל הנדסי בכיר עם ניסיון מוכח בסביבות ייצור ותעשייה, המשלב הובלת פרויקטים, אחריות תהליכית, כלים הנדסיים, שיפור ביצועים והובלת ממשקים כפי שעולה מקורות החיים.`
+    : `Manufacturing and industrial engineering professional with proven scope in ${domain.roleFamily.replace(/_/g, " ")} environments, combining process ownership, engineering tools, operational improvement, and leadership signals that are supported by the CV.`;
   return { profileSummary, tailoredBio, strengths, weaknesses, recommendations };
 }
 
@@ -717,25 +737,28 @@ function jobFitDecision(finalScore: number): "High" | "Medium" | "Low" {
   return "Low";
 }
 
-function buildBulletOptimization(matches: RequirementMatch[]): FitAnalysis["bulletPointOptimization"] {
+function buildBulletOptimization(matches: RequirementMatch[], language: TextLanguage): FitAnalysis["bulletPointOptimization"] {
   return matches
     .filter((match) => match.state === "weakly_supported" || match.state === "uncertain")
     .slice(0, 3)
     .map((match) => ({
-      original: match.topEvidence?.cvSourceText || `No direct proof for ${match.requirement.label}.`,
-      optimized: `If accurate, add a clearer bullet that proves ${match.requirement.label} with scope, tool/method, and measurable impact.`,
-      rationale: match.rationale
+      original: match.topEvidence?.cvSourceText || (language === "he" || language === "mixed" ? `אין ראיה ישירה ל-${match.requirement.label}.` : `No direct proof for ${match.requirement.label}.`),
+      optimized: language === "he" || language === "mixed"
+        ? `אם זה נכון ומגובה בניסיון: הוסף ניסוח שמוכיח ${match.requirement.label} באמצעות היקף אחריות, כלי/שיטה ותוצאה מדידה.`
+        : `If accurate, add a clearer bullet that proves ${match.requirement.label} with scope, tool/method, and measurable impact.`,
+      rationale: language === "he" || language === "mixed" ? "שיפור ניסוח מבוסס ראיות בלבד, ללא הוספת ניסיון שלא קיים." : match.rationale
     }));
 }
 
 export function buildEvidenceBasedAnalysis(resumeText: string, jobDescription: string): FitAnalysis {
+  const resumeLanguage = detectTextLanguage(resumeText);
   const domain = detectDomain(jobDescription);
   const requirements = extractRequirements(jobDescription, domain);
   const matches = buildMatches(resumeText, requirements);
   const scoring = computeScoring(matches);
   const jdWarnings = lintJobDescription(jobDescription, requirements);
   const uncertainty = uncertaintyFlags(matches, jdWarnings);
-  const summary = buildSummary(matches, scoring, domain);
+  const summary = buildSummary(matches, scoring, domain, resumeLanguage.language);
   const evidenceMap = buildEvidenceMap(matches);
   const inputHash = stableHash(resumeText, jobDescription);
 
@@ -760,7 +783,7 @@ export function buildEvidenceBasedAnalysis(resumeText: string, jobDescription: s
     finalScore: scoring.finalScore,
     confidenceScore: scoring.confidenceScore,
     jdQualityWarnings: jdWarnings,
-    candidateRecommendations: buildCandidateRecommendations(matches, domain),
+    candidateRecommendations: buildCandidateRecommendations(matches, domain, resumeLanguage.language),
     recruiterRecommendations: buildRecruiterRecommendations(matches),
     evidenceMap,
     analysisMeta: {
@@ -768,11 +791,13 @@ export function buildEvidenceBasedAnalysis(resumeText: string, jobDescription: s
       analysisMode: "evidence_based_hiring_intelligence",
       vertical: "manufacturing",
       generatedAt: new Date().toISOString(),
-      inputHash
+      inputHash,
+      resumeLanguage: resumeLanguage.language,
+      resumeLanguageConfidence: resumeLanguage.confidence
     } satisfies AnalysisMeta,
     profileSummary: summary.profileSummary,
     tailoredBio: summary.tailoredBio,
-    bulletPointOptimization: buildBulletOptimization(matches),
+    bulletPointOptimization: buildBulletOptimization(matches, resumeLanguage.language),
     matchedKeywords,
     missingKeywords,
     matchScore: scoring.finalScore,

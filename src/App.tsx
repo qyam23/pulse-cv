@@ -154,6 +154,8 @@ interface AnalysisResult {
     vertical: string;
     generatedAt: string;
     inputHash: string;
+    resumeLanguage?: "he" | "en" | "mixed" | "unknown";
+    resumeLanguageConfidence?: number;
   };
   profileSummary: string;
   tailoredBio: string;
