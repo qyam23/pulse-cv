@@ -707,7 +707,7 @@ function buildSummary(matches: RequirementMatch[], scoring: ScoringBreakdown, do
     .map((match) => match.requirement.label);
   const recommendations = weaknesses.map((item) => `Clarify or prove ${item} with direct, recent evidence if it is true.`);
   const profileSummary = `The role sits in ${domain.primaryDomain.replace(/_/g, " ")} / ${domain.roleFamily.replace(/_/g, " ")}. The analysis found ${strengths.length} strong evidence-backed matches and ${weaknesses.length} real gaps or uncertain zones. Final fit should be read together with evidence strength and must-have coverage, not score alone.`;
-  const tailoredBio = `Evidence-backed fit for ${domain.roleFamily.replace(/_/g, " ")} roles: emphasizes proven manufacturing scope, engineering tools, process ownership, and leadership signals that are actually supported by the CV.`;
+  const tailoredBio = `Manufacturing and industrial engineering professional with proven scope in ${domain.roleFamily.replace(/_/g, " ")} environments, combining process ownership, engineering tools, operational improvement, and leadership signals that are supported by the CV.`;
   return { profileSummary, tailoredBio, strengths, weaknesses, recommendations };
 }
 

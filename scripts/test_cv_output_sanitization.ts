@@ -195,6 +195,7 @@ async function testPdfLeakageBlocked() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pulse-pdf-leakage-"));
   const sourcePath = path.join(tempDir, "resume.pdf");
   const outputPath = path.join(tempDir, "updated-resume.pdf");
+  const expectedDocxPath = path.join(tempDir, "updated-resume.docx");
   const redlinePath = path.join(tempDir, "change-report.md");
   const resumeText = "Jane Doe\njane@example.com\nProfessional Summary\nProcess engineer with plant experience.\nExperience\nLed process improvements across production lines.";
   await createSamplePdf(sourcePath, [
@@ -234,7 +235,9 @@ async function testPdfLeakageBlocked() {
   };
   const result = await runWorker(request, tempDir);
   assert.ok(Array.isArray(result.warnings));
-  const text = await extractPdfText(outputPath);
+  assert.equal(result.outputMimeType, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  assert.equal(result.outputFileName, "updated-resume.docx");
+  const text = await extractDocxText(expectedDocxPath);
   assert.match(text, /Process engineer with plant experience/);
   assert.ok(!/If accurate/i.test(text));
   assertNoBanned(text);

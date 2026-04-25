@@ -29,13 +29,13 @@ def main() -> None:
 
     api.add_space_secret(repo_id=SPACE_ID, key="HF_TOKEN", value=token)
     api.add_space_variable(repo_id=SPACE_ID, key="AI_PROVIDER", value="huggingface")
-    api.add_space_variable(repo_id=SPACE_ID, key="HF_MODEL", value=os.getenv("HF_MODEL", "Qwen/Qwen3-32B"))
+    api.add_space_variable(repo_id=SPACE_ID, key="HF_MODEL", value=os.getenv("HF_MODEL", "Qwen/Qwen3-32B:nscale"))
     api.add_space_variable(
         repo_id=SPACE_ID,
         key="HF_MODEL_CANDIDATES",
         value=os.getenv(
             "HF_MODEL_CANDIDATES",
-            "Qwen/Qwen3-32B,deepseek-ai/DeepSeek-R1-Distill-Qwen-32B,Qwen/Qwen2.5-Coder-32B-Instruct",
+            "Qwen/Qwen3-32B:nscale,Qwen/Qwen3-32B:ovhcloud,Qwen/Qwen3-Coder-30B-A3B-Instruct:ovhcloud,Qwen/Qwen2.5-Coder-7B-Instruct:nscale,openai/gpt-oss-20b:groq,openai/gpt-oss-20b",
         ),
     )
     api.add_space_variable(repo_id=SPACE_ID, key="NODE_ENV", value="production")

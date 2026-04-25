@@ -39,8 +39,8 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN || secrets.PULSR_CV }}
           HF_SPACE_ID: qyam23/pulse-cv
-          HF_MODEL: Qwen/Qwen3-32B
-          HF_MODEL_CANDIDATES: Qwen/Qwen3-32B,deepseek-ai/DeepSeek-R1-Distill-Qwen-32B,Qwen/Qwen2.5-Coder-32B-Instruct
+          HF_MODEL: Qwen/Qwen3-32B:nscale
+          HF_MODEL_CANDIDATES: Qwen/Qwen3-32B:nscale,Qwen/Qwen3-32B:ovhcloud,Qwen/Qwen3-Coder-30B-A3B-Instruct:ovhcloud,Qwen/Qwen2.5-Coder-7B-Instruct:nscale,openai/gpt-oss-20b:groq,openai/gpt-oss-20b
         run: |
           if [ -z "$HF_TOKEN" ]; then
             echo "HF_TOKEN secret is not configured. Skipping Hugging Face Space deployment."

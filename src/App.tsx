@@ -915,7 +915,7 @@ export default function App() {
     setTimeout(() => setCopyBioLabel("Copy evidence-based bio"), 1800);
   }, [result]);
 
-  const canApplyRecommendations = Boolean(result && resumeSourceDocument && !isStaticPagesRuntime);
+  const canApplyRecommendations = Boolean(result && !isStaticPagesRuntime);
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1498,21 +1498,23 @@ export default function App() {
                 <SectionHeader
                   icon={Wand2}
                   title="Apply recommendations"
-                  subtitle="Generate an updated CV from the original uploaded file, review the edit plan first, then download the updated version and the change report."
+                  subtitle="Open beta: generate an updated Word CV from the original uploaded file, review the edit plan first, then download the updated version and the change report."
                 />
                 <div className="mt-6 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
                   <div className="rounded-[1.8rem] border border-slate-200 bg-slate-50/80 p-5">
                     <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Source document</p>
-                    <p className="mt-3 text-lg font-black text-slate-900">{resumeSourceDocument?.fileName}</p>
+                    <p className="mt-3 text-lg font-black text-slate-900">{resumeSourceDocument?.fileName || "Upload a PDF or DOCX resume to unlock Word export"}</p>
                     <p className="mt-2 text-sm leading-relaxed text-slate-500">
-                      {resumeSourceDocument?.format === "docx"
-                        ? "Pulse CV will use a DOCX-first surgical patch path with style retention."
-                        : "Pulse CV will use a recruiter-safe PDF regeneration path and warn if exact layout cannot be preserved."}
+                      {!resumeSourceDocument
+                        ? "The full analysis is free now. To create a Word file in the same writing style and line structure, upload the original resume document first."
+                        : resumeSourceDocument.format === "docx"
+                          ? "Pulse CV will use a DOCX-first surgical patch path with style retention."
+                          : "Pulse CV will generate an ATS-safe Word file from the uploaded PDF and preserve the original writing style as much as possible."}
                     </p>
                   </div>
                   <button
                     onClick={previewApplyRecommendations}
-                    disabled={isPlanningCvUpdate}
+                    disabled={isPlanningCvUpdate || !resumeSourceDocument}
                     className="inline-flex items-center justify-center gap-2 rounded-[1.6rem] bg-indigo-600 px-6 py-4 text-sm font-black text-white shadow-lg shadow-indigo-200 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {isPlanningCvUpdate ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
@@ -1736,32 +1738,32 @@ export default function App() {
             <section id="pricing" className="rounded-[3rem] border border-slate-200 bg-[linear-gradient(135deg,#0f172a_0%,#1e1b4b_100%)] p-8 text-white shadow-[0_40px_120px_rgba(15,23,42,0.22)] md:p-12">
               <div className="grid gap-10 lg:grid-cols-[0.9fr_1.1fr]">
                 <div className="space-y-5">
-                  <p className="text-xs font-black uppercase tracking-[0.24em] text-indigo-200">Commercial model beta</p>
-                  <h2 className="text-4xl font-black tracking-tight md:text-5xl">Evidence-backed analysis, not ATS myths.</h2>
+                  <p className="text-xs font-black uppercase tracking-[0.24em] text-indigo-200">Open access beta</p>
+                  <h2 className="text-4xl font-black tracking-tight md:text-5xl">Full evidence report is free for everyone right now.</h2>
                   <p className="max-w-xl text-base leading-relaxed text-indigo-100 md:text-lg">
-                    Free gives a trusted summary, must-have coverage, and a limited evidence map. Premium unlocks the full fit breakdown, recruiter-grade evidence detail, JD quality review, and interview readiness.
+                    During the beta period, the full fit breakdown, evidence map, JD quality review, recommendations, and Word export flow are open to all users. Billing can be attached later without changing the product flow.
                   </p>
                 </div>
                 <div className="grid gap-5 md:grid-cols-2">
                   <PricingCard
-                    tier="Free"
+                    tier="Open beta"
                     price="$0"
                     features={[
-                      "Limited evidence map preview",
-                      "Must-have coverage summary",
-                      "Core candidate recommendations",
-                      "Basic JD quality review",
+                      "Full evidence map",
+                      "Must-have coverage",
+                      "Candidate recommendations",
+                      "JD quality review",
                     ]}
                     accent="bg-white text-slate-900"
                   />
                   <PricingCard
-                    tier="Premium report"
-                    price="$19"
+                    tier="Included now"
+                    price="$0"
                     features={[
-                      "Full evidence map",
                       "Full fit breakdown by category",
+                      "Word CV export from uploaded resume",
                       "Interview question pack",
-                      "JD quality review with risk flags",
+                      "Change report download",
                     ]}
                     accent="bg-indigo-500 text-white"
                     premium
@@ -1821,7 +1823,7 @@ function PricingCard({
         ))}
       </div>
       <button className={`mt-8 inline-flex w-full items-center justify-center rounded-[1.4rem] px-4 py-3 text-xs font-black uppercase tracking-[0.2em] ${premium ? "bg-white text-indigo-700" : "bg-slate-900 text-white"}`}>
-        {premium ? "Unlock premium" : "Current plan"}
+        {premium ? "Available now" : "Open now"}
       </button>
     </div>
   );

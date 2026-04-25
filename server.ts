@@ -1034,14 +1034,53 @@ Return JSON with this shape:
 `;
   }
 
+  function asStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 8)
+      : [];
+  }
+
+  function mergeRecommendationBlock(deterministicBlock: any, aiBlock: any) {
+    if (!aiBlock || typeof aiBlock !== "object") return deterministicBlock;
+    return {
+      ...deterministicBlock,
+      wordingFixes: asStringArray(aiBlock.wordingFixes).length ? asStringArray(aiBlock.wordingFixes) : deterministicBlock.wordingFixes,
+      proofGaps: asStringArray(aiBlock.proofGaps).length ? asStringArray(aiBlock.proofGaps) : deterministicBlock.proofGaps,
+      likelyInterviewQuestions: asStringArray(aiBlock.likelyInterviewQuestions).length ? asStringArray(aiBlock.likelyInterviewQuestions) : deterministicBlock.likelyInterviewQuestions,
+      titleAlignmentSuggestions: asStringArray(aiBlock.titleAlignmentSuggestions).length ? asStringArray(aiBlock.titleAlignmentSuggestions) : deterministicBlock.titleAlignmentSuggestions,
+    };
+  }
+
+  function mergeRecruiterRecommendationBlock(deterministicBlock: any, aiBlock: any) {
+    if (!aiBlock || typeof aiBlock !== "object") return deterministicBlock;
+    return {
+      ...deterministicBlock,
+      verifyManually: asStringArray(aiBlock.verifyManually).length ? asStringArray(aiBlock.verifyManually) : deterministicBlock.verifyManually,
+      weakEvidenceZones: asStringArray(aiBlock.weakEvidenceZones).length ? asStringArray(aiBlock.weakEvidenceZones) : deterministicBlock.weakEvidenceZones,
+      interviewProbes: asStringArray(aiBlock.interviewProbes).length ? asStringArray(aiBlock.interviewProbes) : deterministicBlock.interviewProbes,
+      possibleFalseNegatives: asStringArray(aiBlock.possibleFalseNegatives).length ? asStringArray(aiBlock.possibleFalseNegatives) : deterministicBlock.possibleFalseNegatives,
+    };
+  }
+
   function mergeDeterministicTruth(deterministic: any, aiResult: any, provider: string, model?: string) {
+    const aiBulletOptimizations = Array.isArray(aiResult?.bulletPointOptimization)
+      ? aiResult.bulletPointOptimization
+          .map((item: any) => ({
+            original: String(item?.original || "").trim(),
+            optimized: String(item?.optimized || "").trim(),
+            rationale: String(item?.rationale || "").trim(),
+          }))
+          .filter((item: any) => item.original && item.optimized)
+          .slice(0, 4)
+      : [];
+
     return {
       ...deterministic,
-      profileSummary: deterministic.profileSummary,
-      tailoredBio: deterministic.tailoredBio,
-      bulletPointOptimization: deterministic.bulletPointOptimization,
-      candidateRecommendations: deterministic.candidateRecommendations,
-      recruiterRecommendations: deterministic.recruiterRecommendations,
+      profileSummary: typeof aiResult?.profileSummary === "string" && aiResult.profileSummary.trim() ? aiResult.profileSummary.trim() : deterministic.profileSummary,
+      tailoredBio: typeof aiResult?.tailoredBio === "string" && aiResult.tailoredBio.trim() ? aiResult.tailoredBio.trim() : deterministic.tailoredBio,
+      bulletPointOptimization: aiBulletOptimizations.length ? aiBulletOptimizations : deterministic.bulletPointOptimization,
+      candidateRecommendations: mergeRecommendationBlock(deterministic.candidateRecommendations, aiResult?.candidateRecommendations),
+      recruiterRecommendations: mergeRecruiterRecommendationBlock(deterministic.recruiterRecommendations, aiResult?.recruiterRecommendations),
       recommendations: deterministic.recommendations,
       provider,
       model,
@@ -1120,10 +1159,54 @@ Return JSON with this shape:
   function getHuggingFaceModels(): string[] {
     const configured = process.env.HF_MODEL || process.env.HUGGING_FACE_MODEL;
     const candidates = process.env.HF_MODEL_CANDIDATES;
-    return (configured || candidates || "Qwen/Qwen3-32B,deepseek-ai/DeepSeek-R1-Distill-Qwen-32B,Qwen/Qwen2.5-Coder-32B-Instruct")
+    return [
+      configured || "",
+      candidates || "",
+      "Qwen/Qwen3-32B:nscale,Qwen/Qwen3-32B:ovhcloud,Qwen/Qwen3-Coder-30B-A3B-Instruct:ovhcloud,Qwen/Qwen2.5-Coder-7B-Instruct:nscale,openai/gpt-oss-20b:groq,openai/gpt-oss-20b",
+    ]
+      .join(",")
       .split(",")
       .map((model) => model.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((model, index, array) => array.indexOf(model) === index);
+  }
+
+  async function postHuggingFaceChatCompletion(token: string, model: string, prompt: string, baseUrl: string) {
+    const payload = {
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "You improve wording and explanations for an evidence-based hiring report. Return only valid JSON. Do not invent facts.",
+        },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0,
+      max_tokens: 1800,
+      stream: false,
+      response_format: { type: "json_object" },
+    };
+    try {
+      return await axios.post(baseUrl, payload, {
+        timeout: 120000,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+    } catch (error: any) {
+      const status = error.response?.status;
+      const responseFormatRejected = status === 400 && JSON.stringify(error.response?.data || {}).toLowerCase().includes("response_format");
+      if (!responseFormatRejected) throw error;
+      const { response_format: _responseFormat, ...payloadWithoutResponseFormat } = payload;
+      return axios.post(baseUrl, payloadWithoutResponseFormat, {
+        timeout: 120000,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+    }
   }
 
   async function analyzeWithHuggingFaceRouter(resumeText: string, jobDescription: string, deterministic: any) {
@@ -1136,43 +1219,25 @@ Return JSON with this shape:
 
     const prompt = buildExplanationPrompt(resumeText, jobDescription, deterministic);
     const models = getHuggingFaceModels();
+    const endpoints = [
+      "https://router.huggingface.co/v1/chat/completions",
+      "https://api-inference.huggingface.co/v1/chat/completions",
+    ];
     let lastError: any = null;
 
     for (const model of models) {
-      try {
-        const response = await axios.post(
-          "https://router.huggingface.co/v1/chat/completions",
-          {
-            model,
-            messages: [
-              {
-                role: "system",
-                content: "You improve wording and explanations for an evidence-based hiring report. Return only valid JSON. Do not invent facts.",
-              },
-              { role: "user", content: prompt },
-            ],
-            temperature: 0,
-            max_tokens: 1800,
-            stream: false,
-            response_format: { type: "json_object" },
-          },
-          {
-            timeout: 120000,
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-
-        const text = extractProviderText(response.data);
-        const parsed = parseAnalysisJson(text);
-        return mergeDeterministicTruth(deterministic, parsed, "huggingface-router", model);
-      } catch (error: any) {
-        lastError = error;
-        const status = error.response?.status;
-        console.warn(`Hugging Face model failed: ${model}`, error.response?.data || error.message);
-        if (status && ![404, 429, 503, 504].includes(status)) break;
+      for (const endpoint of endpoints) {
+        try {
+          const response = await postHuggingFaceChatCompletion(token, model, prompt, endpoint);
+          const text = extractProviderText(response.data);
+          const parsed = parseAnalysisJson(text);
+          return mergeDeterministicTruth(deterministic, parsed, endpoint.includes("router") ? "huggingface-router" : "huggingface-inference", model);
+        } catch (error: any) {
+          lastError = error;
+          const status = error.response?.status;
+          console.warn(`Hugging Face model failed: ${model} via ${endpoint}`, error.response?.data || error.message);
+          if (status === 401 || status === 403) break;
+        }
       }
     }
 
@@ -1476,7 +1541,7 @@ Return JSON with this shape:
         return res.json(result);
       } catch (error: any) {
         console.error("Hugging Face router analysis error:", error.response?.data || error.message);
-        const result = { ...deterministic, provider: "deterministic-fallback", aiWarning: "Hugging Face enhancement failed; evidence-based fit analysis still completed." };
+        const result = { ...deterministic, provider: "deterministic-safe-mode", model: "deterministic-rewrite-fallback" };
         rememberAnalysis(cacheKey, result);
         await recordQualityEvent("analysis.fallback", {
           provider: "huggingface-router",
