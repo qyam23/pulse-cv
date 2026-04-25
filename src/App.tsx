@@ -1506,10 +1506,10 @@ export default function App() {
                     <p className="mt-3 text-lg font-black text-slate-900">{resumeSourceDocument?.fileName || "Upload a PDF or DOCX resume to unlock Word export"}</p>
                     <p className="mt-2 text-sm leading-relaxed text-slate-500">
                       {!resumeSourceDocument
-                        ? "The full analysis is free now. To create a Word file in the same writing style and line structure, upload the original resume document first."
+                        ? "The full analysis is free now. For best design retention, upload the original Word DOCX file rather than a PDF."
                         : resumeSourceDocument.format === "docx"
-                          ? "Pulse CV will use a DOCX-first surgical patch path with style retention."
-                          : "Pulse CV will generate an ATS-safe Word file from the uploaded PDF and preserve the original writing style as much as possible."}
+                          ? "Pulse CV will use a DOCX-first surgical patch path that keeps the original structure and styling as much as possible."
+                          : "Pulse CV will generate an ATS-safe Word file from the PDF. For exact visual design retention, upload the original DOCX version."}
                     </p>
                   </div>
                   <button

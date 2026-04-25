@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from docx import Document
 from docx.oxml import OxmlElement
+from docx.table import _Cell, Table
 from docx.text.paragraph import Paragraph
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -92,6 +93,8 @@ def set_paragraph_text(paragraph: Paragraph, text: str) -> None:
 
     p = paragraph._element
     for child in list(p):
+        if child.tag.endswith("}pPr"):
+            continue
         p.remove(child)
 
     run = paragraph.add_run(text)
@@ -108,6 +111,8 @@ def set_paragraph_text(paragraph: Paragraph, text: str) -> None:
 
 def insert_paragraph_after(paragraph: Paragraph, text: str) -> Paragraph:
     new_p = OxmlElement("w:p")
+    if paragraph._p.pPr is not None:
+        new_p.append(copy.deepcopy(paragraph._p.pPr))
     paragraph._p.addnext(new_p)
     new_para = Paragraph(new_p, paragraph._parent)
     try:
@@ -131,15 +136,45 @@ def paragraph_contains(paragraph: Paragraph, target: str) -> bool:
     return normalize_text(target) in normalize_text(paragraph.text)
 
 
+def iter_table_paragraphs(table: Table) -> List[Paragraph]:
+    paragraphs: List[Paragraph] = []
+    for row in table.rows:
+        for cell in row.cells:
+            paragraphs.extend(iter_cell_paragraphs(cell))
+    return paragraphs
+
+
+def iter_cell_paragraphs(cell: _Cell) -> List[Paragraph]:
+    paragraphs: List[Paragraph] = list(cell.paragraphs)
+    for table in cell.tables:
+        paragraphs.extend(iter_table_paragraphs(table))
+    return paragraphs
+
+
+def iter_document_paragraphs(document: Document) -> List[Paragraph]:
+    """Return editable paragraphs from body, tables, headers, and footers."""
+    paragraphs: List[Paragraph] = list(document.paragraphs)
+    for table in document.tables:
+        paragraphs.extend(iter_table_paragraphs(table))
+    for section in document.sections:
+        paragraphs.extend(section.header.paragraphs)
+        paragraphs.extend(section.footer.paragraphs)
+        for table in section.header.tables:
+            paragraphs.extend(iter_table_paragraphs(table))
+        for table in section.footer.tables:
+            paragraphs.extend(iter_table_paragraphs(table))
+    return paragraphs
+
+
 def find_paragraph_by_text(document: Document, target: str) -> Optional[Paragraph]:
-    for paragraph in document.paragraphs:
+    for paragraph in iter_document_paragraphs(document):
         if paragraph_contains(paragraph, target):
             return paragraph
     return None
 
 
 def all_document_text(document: Document) -> str:
-    return "\n".join(p.text for p in document.paragraphs if p.text)
+    return "\n".join(p.text for p in iter_document_paragraphs(document) if p.text)
 
 
 def extract_contact_lines(text: str) -> List[str]:
@@ -232,7 +267,8 @@ def apply_docx(request: Dict[str, Any]) -> Tuple[str, str, List[str]]:
             before_after.append({"id": instruction["id"], "before": paragraph.text, "after": replacement})
             set_paragraph_text(paragraph, replacement)
         elif action == "insert_bullet":
-            anchor_paragraph = find_paragraph_by_text(document, anchor) or (document.paragraphs[-1] if document.paragraphs else None)
+            paragraphs = iter_document_paragraphs(document)
+            anchor_paragraph = find_paragraph_by_text(document, anchor) or (paragraphs[-1] if paragraphs else None)
             if anchor_paragraph is None:
                 warnings.append(f"Could not locate anchor for insertion in section {instruction['sectionLabel']}.")
                 continue
@@ -301,9 +337,48 @@ def build_pdf_story(text: str) -> List[Any]:
     return story
 
 
+def normalize_pdf_resume_lines(text: str) -> List[str]:
+    section_markers = [
+        "תקציר מקצועי",
+        "מוקדי ניסיון",
+        "ניסיון מקצועי",
+        "השכלה",
+        "שפות",
+        "Professional Summary",
+        "Experience",
+        "Education",
+        "Skills",
+        "Languages",
+    ]
+    normalized = text.replace("\uf0b7", "\n• ")
+    for marker in section_markers:
+        normalized = re.sub(rf"\s+({re.escape(marker)})\s+", rf"\n\1\n", normalized)
+    lines: List[str] = []
+    for raw_line in normalized.splitlines():
+        line = raw_line.strip()
+        if not line:
+            lines.append("")
+            continue
+        if len(line) <= 420:
+            lines.append(line)
+            continue
+        chunks = re.split(r"(?<=[.;:])\s+|(?<=\.)\s+|(?<=\|)\s+", line)
+        buffer = ""
+        for chunk in chunks:
+            candidate = f"{buffer} {chunk}".strip()
+            if len(candidate) > 320 and buffer:
+                lines.append(buffer)
+                buffer = chunk.strip()
+            else:
+                buffer = candidate
+        if buffer:
+            lines.append(buffer)
+    return [line for line in lines if line or lines.count("") < 12]
+
+
 def build_docx_from_text(output_path: Path, text: str) -> None:
     document = Document()
-    for raw_line in text.splitlines():
+    for raw_line in normalize_pdf_resume_lines(text):
         line = raw_line.strip()
         if not line:
             document.add_paragraph("")

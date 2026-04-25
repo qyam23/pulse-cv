@@ -267,8 +267,8 @@ export function buildCvEditPlan(
 
   const warnings: string[] = [];
   if (sourceDocument.format === "pdf") {
-    warnings.push("PDF output uses a recruiter-safe regenerated PDF path. Exact layout preservation is not guaranteed.");
-    warnings.push("If the original PDF was highly graphical, the exported PDF will prioritize ATS readability and section fidelity over pixel-perfect layout.");
+    warnings.push("PDF output uses a recruiter-safe DOCX regeneration path. Exact Word layout preservation requires uploading the original DOCX file.");
+    warnings.push("If the source was a PDF, the exported Word file prioritizes ATS readability, content order, and writing style over pixel-perfect visual design.");
   }
   if (!instructions.length) {
     warnings.push("No safe surgical edits were generated from the current analysis. The source CV will remain unchanged.");
