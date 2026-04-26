@@ -33,8 +33,11 @@ export async function runCvGenerationWorker(payload: CvGenerateRequest, record: 
   const safePlan = prepareSafeEditPlan(payload.editPlan);
   const planValidationWarnings: string[] = [];
   for (const instruction of safePlan.plan.instructions) {
+    if (!instruction.safeToApply) {
+      throw new Error(`Refusing to generate CV because instruction ${instruction.id} is not marked safeToApply.`);
+    }
     if (instruction.replacementText) {
-      const validation = validateFinalCvOutput(instruction.replacementText);
+      const validation = validateFinalCvOutput(instruction.replacementText, instruction.sourceLanguage as any);
       if (!validation.valid) {
         throw new Error(`Refusing to generate CV because replacement text still contains banned internal phrases: ${validation.violations.join(", ")}`);
       }

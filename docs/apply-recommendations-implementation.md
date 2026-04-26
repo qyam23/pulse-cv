@@ -68,6 +68,26 @@ Honest guarantee:
 - dates and chronology are preserved unless intentionally edited
 - recommendations are applied only through Pulse CV analysis output
 - AI is not used as the source of truth for scoring or fit logic
+- only `FinalCvPatch.replacementText` may enter DOCX generation
+- `DisplayRecommendation.message` is UI-only and can never be written into the CV
+- multilingual meta-language validation runs before patch creation and again inside the DOCX worker
+- if a generated patch contains advice, conditional wording, UI labels, or language mismatch, the download is blocked
+
+## Multilingual repair architecture
+Pulse CV now separates:
+- `DisplayRecommendation`
+- `InternalEditInstruction`
+- `FinalCvPatch`
+
+The core product rule is:
+
+```text
+Analyze in any language.
+Recommend in the UI layer.
+Patch only in the CV language.
+Patch only with evidence.
+Never write advice into the CV.
+```
 
 ## Implemented API
 - `POST /api/cv/apply-recommendations/plan`

@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { buildCvEditPlan } from "../server/cvApply/editPlan";
 import { prepareSafeEditPlan } from "../server/cvApply/finalContent";
+import { analyzeMetaLanguage } from "../server/cvApply/metaLanguageGuard";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +25,10 @@ const BANNED_PATTERNS = [
   /the cv should/i,
   /the candidate should/i,
   /recruiter-ready/i,
+  /אם זה נכון/u,
+  /הוסף/u,
+  /מומלץ/u,
+  /manual review/i,
 ];
 
 function createAnalysis(overrides: Record<string, unknown> = {}) {
@@ -243,7 +248,58 @@ async function testPdfLeakageBlocked() {
   assertNoBanned(text);
 }
 
+function testMetaLanguageGuard() {
+  const he = analyzeMetaLanguage("אם זה נכון, הוסף ניסוח שמוכיח ניסיון.", "he");
+  assert.equal(he.safe, false);
+  const en = analyzeMetaLanguage("If accurate, add a clearer bullet.", "en");
+  assert.equal(en.safe, false);
+  const safe = analyzeMetaLanguage("Led cross-functional process improvements across the plant.", "en");
+  assert.equal(safe.safe, true);
+}
+
+function testDisplayRecommendationsNeverBecomePatches() {
+  const resumeText = "יובל סטרוסטה\nניסיון מקצועי\nניהול פרויקטים תעשייתיים.";
+  const analysis = createAnalysis({
+    profileSummary: "מנהל הנדסי בכיר עם ניסיון מוכח בסביבות ייצור.",
+    tailoredBio: "מנהל הנדסי בכיר עם ניסיון מוכח בסביבות ייצור.",
+    bulletPointOptimization: [
+      {
+        original: "ניהול פרויקטים תעשייתיים.",
+        optimized: "אם זה נכון, הוסף ניסוח שמוכיח ניסיון מכני.",
+        rationale: "המלצה פנימית בלבד.",
+      },
+    ],
+    candidateRecommendations: {
+      wordingFixes: ["שפר את הניסוח סביב הובלת צוותים."],
+      proofGaps: ["לא נמצאה ראיה ל-AutoCAD."],
+      likelyInterviewQuestions: [],
+      titleAlignmentSuggestions: [],
+    },
+    evidenceMap: [],
+    matchedEvidenceByType: {},
+    missingRequirementsByType: {},
+    analysisMeta: { inputHash: "he-hash" },
+  });
+
+  const plan = prepareSafeEditPlan(
+    buildCvEditPlan(analysis, resumeText, {
+      fileName: "resume.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      format: "docx",
+      base64: "",
+      extractedText: resumeText,
+      size: 1,
+    } as any),
+  ).plan;
+
+  assert.ok(plan.displayRecommendations.length >= 1);
+  assert.ok(plan.instructions.every((instruction) => instruction.safeToApply));
+  assert.ok(plan.instructions.every((instruction) => !/אם זה נכון/u.test(instruction.replacementText || "")));
+}
+
 async function main() {
+  testMetaLanguageGuard();
+  testDisplayRecommendationsNeverBecomePatches();
   await testNoChangesDocx();
   await testDocxRewriteLeakageBlocked();
   await testPdfLeakageBlocked();

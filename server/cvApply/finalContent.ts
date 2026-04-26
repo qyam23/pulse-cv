@@ -1,37 +1,6 @@
 import type { CvEditInstruction, CvEditPlan } from "./types";
-
-const BANNED_PHRASE_PATTERNS: RegExp[] = [
-  /\bif accurate\b/i,
-  /\badd a bullet\b/i,
-  /\bsuggested\b/i,
-  /\brecommendation\b/i,
-  /\bevidence-backed\b/i,
-  /\bconsider adding\b/i,
-  /\bif relevant\b/i,
-  /\bif applicable\b/i,
-  /\bimprove proof of\b/i,
-  /\btailor this\b/i,
-  /\bthe cv should\b/i,
-  /\bthe candidate should\b/i,
-  /\bedit plan\b/i,
-  /\bplanner\b/i,
-  /\bcoaching\b/i,
-  /\banalysis\b/i,
-  /\bapply recommendations?\b/i,
-  /\brecruiter-ready\b/i,
-  /\bwording layer\b/i,
-  /\binternal explanation\b/i,
-];
-
-const BANNED_LINE_PATTERNS: RegExp[] = [
-  /^if\b/i,
-  /^suggested\b/i,
-  /^recommendation\b/i,
-  /^consider\b/i,
-  /^tailor\b/i,
-  /^the cv should\b/i,
-  /^the candidate should\b/i,
-];
+import { detectTextLanguage, type TextLanguage } from "../analysis/language";
+import { sanitizeDisplayText, validateFinalCvSentence } from "./metaLanguageGuard";
 
 export type FinalCvValidationResult = {
   valid: boolean;
@@ -44,67 +13,52 @@ export type SanitizedInstruction = {
   warnings: string[];
 };
 
-function cleanWhitespace(value: string): string {
-  return value
-    .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+function unique<T>(values: T[]): T[] {
+  return Array.from(new Set(values));
 }
 
 export function sanitizeRecruiterFacingText(value: string): { text: string; warnings: string[]; rejected: boolean } {
-  const warnings: string[] = [];
-  if (!value?.trim()) {
-    return { text: "", warnings, rejected: true };
-  }
-
-  const keptLines = value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => {
-      const banned = BANNED_LINE_PATTERNS.some((pattern) => pattern.test(line)) || BANNED_PHRASE_PATTERNS.some((pattern) => pattern.test(line));
-      if (banned) {
-        warnings.push(`Removed internal instruction line: ${line}`);
-      }
-      return !banned;
-    });
-
-  const text = cleanWhitespace(keptLines.join("\n"));
-  const rejected = !text || BANNED_PHRASE_PATTERNS.some((pattern) => pattern.test(text));
-  if (rejected) {
-    warnings.push("Recruiter-facing text was rejected because it still contained internal instruction language.");
-  }
-  return { text, warnings, rejected };
+  return sanitizeDisplayText(value);
 }
 
 export function sanitizeEditInstruction(instruction: CvEditInstruction): SanitizedInstruction {
   const warnings: string[] = [];
-  const cleanedReplacement = instruction.replacementText
-    ? sanitizeRecruiterFacingText(instruction.replacementText)
-    : { text: "", warnings: [], rejected: false };
-  warnings.push(...cleanedReplacement.warnings);
-
-  if (instruction.replacementText && cleanedReplacement.rejected) {
+  if (!instruction.safeToApply) {
     return {
       instruction,
       dropped: true,
-      warnings: [`Dropped instruction ${instruction.id} because replacement text was contaminated.`, ...warnings],
+      warnings: [`Dropped instruction ${instruction.id} because it was not marked safeToApply.`],
     };
   }
 
-  const cleanedTarget = instruction.targetText
-    ? sanitizeRecruiterFacingText(instruction.targetText)
-    : { text: "", warnings: [], rejected: false };
+  const expectedLanguage: TextLanguage = instruction.sourceLanguage === "mixed" || instruction.sourceLanguage === "unknown"
+    ? detectTextLanguage(instruction.targetText || instruction.replacementText || "").language
+    : instruction.sourceLanguage as TextLanguage;
+  const validation = validateFinalCvSentence(instruction.replacementText || "", expectedLanguage);
+  if (!validation.safe) {
+    return {
+      instruction,
+      dropped: true,
+      warnings: [
+        `Dropped instruction ${instruction.id} because replacement text was contaminated.`,
+        ...validation.violations.map((entry) => `Violation: ${entry}`),
+      ],
+    };
+  }
 
-  const sanitizedInstruction: CvEditInstruction = {
-    ...instruction,
-    replacementText: instruction.replacementText ? cleanedReplacement.text : instruction.replacementText,
-    targetText: instruction.targetText && !cleanedTarget.rejected ? cleanedTarget.text : instruction.targetText,
-  };
+  const targetValidation = instruction.targetText
+    ? validateFinalCvSentence(instruction.targetText, expectedLanguage)
+    : null;
+
+  if (instruction.targetText && targetValidation && !targetValidation.safe) {
+    warnings.push(`Target text for ${instruction.id} looks like meta text. Keeping source anchor only.`);
+  }
 
   return {
-    instruction: sanitizedInstruction,
+    instruction: {
+      ...instruction,
+      targetText: targetValidation?.safe ? instruction.targetText : instruction.targetText,
+    },
     dropped: false,
     warnings,
   };
@@ -125,29 +79,28 @@ export function prepareSafeEditPlan(plan: CvEditPlan): { plan: CvEditPlan; warni
   return {
     plan: {
       ...plan,
-      warnings: Array.from(new Set(warnings)),
+      warnings: unique(warnings),
       instructions,
       sections: plan.sections.map((section) => {
-        const instructionCount = instructions.filter((item) => item.sectionId === section.id).length;
+        const sectionInstructions = instructions.filter((item) => item.sectionId === section.id);
+        const instructionCount = sectionInstructions.length;
         return instructionCount
           ? {
               ...section,
               status: section.status === "unchanged" ? "will_change" : section.status,
-              summary: `${instructionCount} targeted edit${instructionCount > 1 ? "s" : ""}`,
+              summary: `${instructionCount} low-risk patch${instructionCount > 1 ? "es" : ""} ready for review`,
             }
           : section;
       }),
     },
-    warnings: Array.from(new Set(warnings)),
+    warnings: unique(warnings),
   };
 }
 
-export function validateFinalCvOutput(text: string): FinalCvValidationResult {
-  const normalized = cleanWhitespace(text);
-  const violations = BANNED_PHRASE_PATTERNS.filter((pattern) => pattern.test(normalized)).map((pattern) => pattern.source);
+export function validateFinalCvOutput(text: string, expectedLanguage: TextLanguage = detectTextLanguage(text).language): FinalCvValidationResult {
+  const validation = validateFinalCvSentence(text, expectedLanguage);
   return {
-    valid: violations.length === 0,
-    violations,
+    valid: validation.safe,
+    violations: validation.violations,
   };
 }
-

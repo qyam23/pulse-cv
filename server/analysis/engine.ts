@@ -50,6 +50,10 @@ const LEADERSHIP_SCOPE_PATTERNS = /lead|head|manager|director|management|מנה�
 const YEARS_PATTERNS = /\d+\s*(years|year|שנים|שנה)/i;
 const REQUIRED_CONTEXT_PATTERNS = /must|required|mandatory|minimum|experience with|knowledge of|hands[- ]on|חובה|נדרש|נדרשת|ידע ב|ידע וניסיון|ניסיון ב|ניסיון עם/u;
 
+const ROLE_HIRING_MARKERS = /looking|seeking|hiring|required|role|position|job|דרוש|דרושה|דרוש\.ה|מחפש|מחפשת|משרה|תפקיד/iu;
+const ROLE_LEADERSHIP_MARKERS = /lead|head|manager|director|owner|מנהל|מנהלת|מוביל|מובילה|הובלת|ראש|אחריות/iu;
+const ROLE_TECHNICAL_MARKERS = /technical|engineering|engineer|system|project|program|manufacturing|process|mechanical|electrical|software|hardware|טכני|הנדסי|מהנדס|מערכת|פרויקט|תהליך|ייצור|מכאנ|אלקטרו|תוכנה|חומרה/iu;
+
 function stableHash(...parts: string[]): string {
   return crypto.createHash("sha256").update(parts.join("|")).digest("hex");
 }
@@ -82,6 +86,42 @@ function requirementTypeLabel(type: RequirementType): string {
     default:
       return "Other";
   }
+}
+
+
+function localizedRequirementLabel(label: string, language: TextLanguage): string {
+  if (language !== "he" && language !== "mixed") return label;
+  const normalized = normalizeText(label);
+  const dictionary: Record<string, string> = {
+    "technical manager": "מנהל טכני",
+    "factory engineering lead": "מוביל הנדסת מפעל",
+    "leadership": "הובלה ניהולית",
+    "manufacturing": "ייצור תעשייתי",
+    "english": "אנגלית",
+    "electronics engineering": "הנדסת אלקטרוניקה",
+    "aeronautical engineering": "הנדסת אווירונאוטיקה",
+    "software engineering": "הנדסת תוכנה",
+    "systems architecture": "ארכיטקטורת מערכות",
+    "requirements documentation": "כתיבת מסמכי דרישות"
+  };
+  return dictionary[normalized] || label;
+}
+
+function localizedDomainLabel(value: string, language: TextLanguage): string {
+  if (language !== "he" && language !== "mixed") return value.replace(/_/g, " ");
+  const normalized = normalizeText(value);
+  const dictionary: Record<string, string> = {
+    manufacturing: "ייצור תעשייתי",
+    industrial: "תעשייה",
+    engineering_leadership: "הובלה הנדסית",
+    manufacturing_engineering: "הנדסת ייצור",
+    operations: "תפעול"
+  };
+  return dictionary[normalized] || value.replace(/_/g, " ");
+}
+
+function he(value: string): string {
+  return value.replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
 }
 
 export function detectDomain(jobDescription: string): DomainDetection {
@@ -212,28 +252,102 @@ function addRequirement(
   });
 }
 
+function pickBestAlias(text: string, aliases: string[]): string | null {
+  const matches = aliases.filter((alias) => includesAlias(text, alias));
+  if (!matches.length) return null;
+  return matches.sort((left, right) => right.length - left.length)[0];
+}
+
+function scoreRoleTitleCandidate(text: string, alias: string | null): number {
+  const tokenCount = tokenize(text).length;
+  const aliasTokenCount = alias ? tokenize(alias).length : 0;
+  let score = alias ? aliasTokenCount * 6 : 0;
+
+  if (ROLE_HIRING_MARKERS.test(text)) score += 3;
+  if (ROLE_LEADERSHIP_MARKERS.test(text)) score += 2;
+  if (ROLE_TECHNICAL_MARKERS.test(text)) score += 2;
+  if (tokenCount <= 10) score += 4;
+  else if (tokenCount <= 18) score += 1;
+  else score -= 4;
+  if (text.length <= 96) score += 2;
+  if (/[,:;]\s/.test(text) && tokenCount > 12) score -= 2;
+
+  return score;
+}
+
+function extractRoleTitleRequirement(jobDescription: string, domain: DomainDetection) {
+  const rawCandidates = [
+    ...lineSpans(jobDescription).slice(0, 10),
+    ...sentenceSpans(jobDescription).slice(0, 6),
+  ];
+  const candidates = rawCandidates.filter(
+    (span, index, array) => array.findIndex((item) => item.start === span.start && item.end === span.end) === index,
+  );
+
+  let best:
+    | {
+        span: { text: string; start: number; end: number };
+        entry: (typeof manufacturingPack.titlesCatalog)[number];
+        alias: string;
+        score: number;
+      }
+    | null = null;
+
+  for (const span of candidates) {
+    for (const entry of manufacturingPack.titlesCatalog) {
+      const alias = pickBestAlias(span.text, entry.aliases);
+      if (!alias) continue;
+      const score = scoreRoleTitleCandidate(span.text, alias);
+      if (!best || score > best.score) {
+        best = { span, entry, alias, score };
+      }
+    }
+  }
+
+  if (best) {
+    return {
+      label: best.entry.canonical,
+      normalizedValue: best.entry.canonical,
+      type: "role_title" as const,
+      subtype: best.entry.roleFamily || domain.roleFamily,
+      sourceText: best.alias,
+      sourceSpanStart: best.span.start,
+      sourceSpanEnd: best.span.end,
+      mustHave: true,
+      confidence: best.score >= 10 ? 0.93 : 0.82,
+      senioritySignal: best.entry.seniorityHint || domain.seniority,
+      domain: domain.primaryDomain,
+    };
+  }
+
+  const fallback = lineSpans(jobDescription)[0];
+  if (!fallback) return null;
+
+  return {
+    label: domain.roleFamily.replace(/_/g, " "),
+    normalizedValue: domain.roleFamily.replace(/_/g, " "),
+    type: "role_title" as const,
+    subtype: domain.roleFamily,
+    sourceText: fallback.text.slice(0, 96),
+    sourceSpanStart: fallback.start,
+    sourceSpanEnd: fallback.end,
+    mustHave: true,
+    confidence: 0.62,
+    senioritySignal: domain.seniority,
+    domain: domain.primaryDomain,
+  };
+}
+
 export function extractRequirements(jobDescription: string, domain: DomainDetection): Requirement[] {
   const requirements: Requirement[] = [];
   const spans = lineSpans(jobDescription);
-  const titleLine = spans.find((span) =>
-    manufacturingPack.titlesCatalog.some((entry) => entry.aliases.some((alias) => includesAlias(span.text, alias)))
-  ) || spans[0];
+  const titleRequirement = extractRoleTitleRequirement(jobDescription, domain);
+  const titleLine = titleRequirement
+    ? { text: titleRequirement.sourceText, start: titleRequirement.sourceSpanStart, end: titleRequirement.sourceSpanEnd }
+    : spans[0];
 
-  if (titleLine) {
-    const matchingTitle = manufacturingPack.titlesCatalog.find((entry) => entry.aliases.some((alias) => includesAlias(titleLine.text, alias)));
-    addRequirement(requirements, {
-      label: matchingTitle?.canonical || titleLine.text,
-      normalizedValue: matchingTitle?.canonical || titleLine.text,
-      type: "role_title",
-      subtype: domain.roleFamily,
-      sourceText: titleLine.text,
-      sourceSpanStart: titleLine.start,
-      sourceSpanEnd: titleLine.end,
-      mustHave: true,
-      confidence: matchingTitle ? 0.93 : 0.68,
-      senioritySignal: domain.seniority,
-      domain: domain.primaryDomain
-    });
+  if (titleRequirement) {
+    addRequirement(requirements, titleRequirement);
   }
 
   if (shouldEmitSeniorityRequirement(domain, titleLine?.text || "", jobDescription)) {
@@ -471,6 +585,25 @@ function findEvidenceForRequirement(resumeText: string, requirement: Requirement
       supportLevel = "implied";
       evidenceType = "domain_context";
       rationale = "The CV shows relevant manufacturing context, but not the exact JD wording.";
+    } else if (
+      supportLevel === "missing" &&
+      requirement.type === "seniority" &&
+      ROLE_LEADERSHIP_MARKERS.test(span.text)
+    ) {
+      supportLevel = ROLE_TECHNICAL_MARKERS.test(span.text) ? "strong_partial" : "implied";
+      evidenceType = "title_signal";
+      rationale = "The CV shows leadership scope in a prominent title or responsibility line.";
+    }
+
+    if (
+      supportLevel === "missing" &&
+      requirement.type === "role_title" &&
+      ROLE_LEADERSHIP_MARKERS.test(span.text) &&
+      ROLE_TECHNICAL_MARKERS.test(span.text)
+    ) {
+      supportLevel = requirement.senioritySignal === "leadership" ? "strong_partial" : "weak_partial";
+      evidenceType = "title_signal";
+      rationale = "The CV shows leadership plus technical or engineering scope that is adjacent to the requested title.";
     }
 
     if (supportLevel !== "missing") {
@@ -670,26 +803,28 @@ function buildCandidateRecommendations(matches: RequirementMatch[], domain: Doma
   const weak = matches.filter((match) => match.state === "weakly_supported" || match.state === "uncertain").slice(0, 3);
   if (language === "he" || language === "mixed") {
     return {
-      wordingFixes: weak.map((match) => `חזק את הניסוח סביב ${match.requirement.label} בעזרת פרויקט, היקף אחריות או תוצאה מדידה, רק אם זה נכון ומגובה בקורות החיים.`),
-      proofGaps: missing.map((match) => `לא נמצאה ראיה ברורה ל-${match.requirement.label}. זה לא פער ניסוח בלבד אלא אם קיימת לך ראיה אמיתית שאפשר להציג.`),
-      likelyInterviewQuestions: manufacturingPack.interviewQuestionTemplates.slice(0, 2).concat(
-        weak.map((match) => `היה מוכן להסביר איפה קורות החיים מוכיחים את ${match.requirement.label}.`)
-      ).slice(0, 4),
+      wordingFixes: weak.map((match) => `${he("\u05d7\u05d6\u05e7 \u05d0\u05ea \u05d4\u05d4\u05d5\u05db\u05d7\u05d4 \u05e1\u05d1\u05d9\u05d1")} ${localizedRequirementLabel(match.requirement.label, language)} ${he("\u05d1\u05d0\u05de\u05e6\u05e2\u05d5\u05ea \u05d4\u05d9\u05e7\u05e3 \u05d0\u05d7\u05e8\u05d9\u05d5\u05ea, \u05db\u05dc\u05d9 \u05e2\u05d1\u05d5\u05d3\u05d4 \u05d0\u05d5 \u05ea\u05d5\u05e6\u05d0\u05d4 \u05de\u05d3\u05d9\u05d3\u05d4 \u05e9\u05db\u05d1\u05e8 \u05e7\u05d9\u05d9\u05de\u05d9\u05dd \u05d1\u05e0\u05d9\u05e1\u05d9\u05d5\u05df \u05e9\u05dc\u05da.")}`),
+      proofGaps: missing.map((match) => `${he("\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d4 \u05e8\u05d0\u05d9\u05d4 \u05d1\u05e8\u05d5\u05e8\u05d4 \u05dc-")}${localizedRequirementLabel(match.requirement.label, language)}. ${he("\u05dc\u05dc\u05d0 \u05e0\u05d9\u05e1\u05d9\u05d5\u05df \u05de\u05d5\u05db\u05d7, \u05d6\u05d4 \u05e0\u05e9\u05d0\u05e8 \u05e4\u05e2\u05e8 \u05d0\u05de\u05d9\u05ea\u05d9 \u05d5\u05dc\u05d0 \u05e8\u05e7 \u05e4\u05e2\u05e8 \u05e0\u05d9\u05e1\u05d5\u05d7.")}`),
+      likelyInterviewQuestions: manufacturingPack.interviewQuestionTemplates
+        .slice(0, 2)
+        .concat(weak.map((match) => `${he("\u05d4\u05db\u05df \u05d3\u05d5\u05d2\u05de\u05d4 \u05d1\u05e8\u05d5\u05e8\u05d4 \u05e9\u05de\u05e8\u05d0\u05d4 \u05d0\u05d9\u05e4\u05d4 \u05e7\u05d5\u05e8\u05d5\u05ea \u05d4\u05d7\u05d9\u05d9\u05dd \u05e9\u05dc\u05da \u05de\u05d5\u05db\u05d9\u05d7\u05d9\u05dd \u05d0\u05ea")} ${localizedRequirementLabel(match.requirement.label, language)}.`))
+        .slice(0, 4),
       titleAlignmentSuggestions: [
-        `כוון את הכותרת המקצועית למשפחת התפקיד: ${domain.roleFamily.replace(/_/g, " ")}.`,
-        "אם התפקיד דורש הובלה הנדסית/ייצורית, ודא שהיקף ההובלה האחרון מופיע בחלק העליון של קורות החיים."
+        `${he("\u05db\u05d5\u05d5\u05df \u05d0\u05ea \u05d4\u05db\u05d5\u05ea\u05e8\u05ea \u05d4\u05de\u05e7\u05e6\u05d5\u05e2\u05d9\u05ea \u05e9\u05dc\u05da \u05dc\u05de\u05e9\u05e4\u05d7\u05ea \u05d4\u05ea\u05e4\u05e7\u05d9\u05d3:")} ${localizedDomainLabel(domain.roleFamily, language)}.`,
+        he("\u05d0\u05dd \u05d4\u05ea\u05e4\u05e7\u05d9\u05d3 \u05d3\u05d5\u05e8\u05e9 \u05d4\u05d5\u05d1\u05dc\u05d4 \u05d4\u05e0\u05d3\u05e1\u05d9\u05ea \u05d0\u05d5 \u05d9\u05d9\u05e6\u05d5\u05e8\u05d9\u05ea, \u05d5\u05d3\u05d0 \u05e9\u05d4\u05d9\u05e7\u05e3 \u05d4\u05d4\u05d5\u05d1\u05dc\u05d4 \u05d4\u05d0\u05d7\u05e8\u05d5\u05df \u05e9\u05dc\u05da \u05de\u05d5\u05e4\u05d9\u05e2 \u05d1\u05d7\u05dc\u05e7 \u05d4\u05e2\u05dc\u05d9\u05d5\u05df \u05e9\u05dc \u05e7\u05d5\u05e8\u05d5\u05ea \u05d4\u05d7\u05d9\u05d9\u05dd.")
       ]
     };
   }
   return {
-    wordingFixes: weak.map((match) => `Strengthen the wording around ${match.requirement.label} with a concrete project, scope, or result if it is true.`),
+    wordingFixes: weak.map((match) => `Strengthen the proof around ${match.requirement.label} with concrete scope, methods, or measurable outcomes already backed by your experience.`),
     proofGaps: missing.map((match) => `There is no clear evidence for ${match.requirement.label}. This is not fixable by wording unless you can cite real experience.`),
-    likelyInterviewQuestions: manufacturingPack.interviewQuestionTemplates.slice(0, 2).concat(
-      weak.map((match) => `Be ready to explain where your CV proves ${match.requirement.label}.`)
-    ).slice(0, 4),
+    likelyInterviewQuestions: manufacturingPack.interviewQuestionTemplates
+      .slice(0, 2)
+      .concat(weak.map((match) => `Be ready to explain where your CV proves ${match.requirement.label}.`))
+      .slice(0, 4),
     titleAlignmentSuggestions: [
       `Align your headline with the JD's role family: ${domain.roleFamily.replace(/_/g, " ")}.`,
-      "If the role expects plant or manufacturing leadership, make recent plant scope visible near the top of the CV."
+      "If the role expects plant or manufacturing leadership, make recent plant scope visible near the top of the CV.",
     ]
   };
 }
@@ -713,21 +848,21 @@ function buildSummary(matches: RequirementMatch[], scoring: ScoringBreakdown, do
     .filter((match) => match.state === "matched" || match.state === "partially_matched")
     .sort((left, right) => right.requirement.importance - left.requirement.importance)
     .slice(0, 5)
-    .map((match) => match.requirement.label);
+    .map((match) => localizedRequirementLabel(match.requirement.label, language));
   const weaknesses = matches
     .filter((match) => match.state === "missing" || match.state === "uncertain")
     .sort((left, right) => Number(right.requirement.mustHave) - Number(left.requirement.mustHave) || right.requirement.importance - left.requirement.importance)
     .slice(0, 5)
-    .map((match) => match.requirement.label);
+    .map((match) => localizedRequirementLabel(match.requirement.label, language));
   const recommendations = language === "he" || language === "mixed"
-    ? weaknesses.map((item) => `הבהר או הוכח את ${item} באמצעות ראיה ישירה ועדכנית, רק אם זה נכון.`)
-    : weaknesses.map((item) => `Clarify or prove ${item} with direct, recent evidence if it is true.`);
+    ? weaknesses.map((item) => `${he("\u05d4\u05d1\u05d4\u05e8 \u05d0\u05d5 \u05d4\u05d5\u05db\u05d7 \u05d0\u05ea")} ${item} ${he("\u05d1\u05d0\u05de\u05e6\u05e2\u05d5\u05ea \u05e8\u05d0\u05d9\u05d4 \u05d9\u05e9\u05d9\u05e8\u05d4, \u05e2\u05d3\u05db\u05e0\u05d9\u05ea \u05d5\u05de\u05d2\u05d5\u05d1\u05d4.")}`)
+    : weaknesses.map((item) => `Clarify or prove ${item} with direct, recent, evidence-backed content.`);
   const profileSummary = language === "he" || language === "mixed"
-    ? `התפקיד מזוהה בדומיין ${domain.primaryDomain.replace(/_/g, " ")} / ${domain.roleFamily.replace(/_/g, " ")}. נמצאו ${strengths.length} התאמות חזקות שמגובות בראיות ו-${weaknesses.length} פערים אמיתיים או אזורי אי-ודאות. יש לקרוא את ההתאמה יחד עם חוזק הראיות וכיסוי דרישות החובה, ולא לפי הציון בלבד.`
-    : `The role sits in ${domain.primaryDomain.replace(/_/g, " ")} / ${domain.roleFamily.replace(/_/g, " ")}. The analysis found ${strengths.length} strong evidence-backed matches and ${weaknesses.length} real gaps or uncertain zones. Final fit should be read together with evidence strength and must-have coverage, not score alone.`;
+    ? `${he("\u05d4\u05ea\u05e4\u05e7\u05d9\u05d3 \u05d9\u05d5\u05e9\u05d1 \u05d1\u05d3\u05d5\u05de\u05d9\u05d9\u05df")} ${localizedDomainLabel(domain.primaryDomain, language)} / ${localizedDomainLabel(domain.roleFamily, language)}. ${he("\u05e0\u05de\u05e6\u05d0\u05d5")} ${strengths.length} ${he("\u05d4\u05ea\u05d0\u05de\u05d5\u05ea \u05d7\u05d6\u05e7\u05d5\u05ea \u05de\u05d2\u05d5\u05d1\u05d5\u05ea \u05e8\u05d0\u05d9\u05d4 \u05d5-")} ${weaknesses.length} ${he("\u05e4\u05e2\u05e8\u05d9\u05dd \u05d0\u05d5 \u05d0\u05d6\u05d5\u05e8\u05d9 \u05d0\u05d9-\u05d5\u05d3\u05d0\u05d5\u05ea. \u05d7\u05e9\u05d5\u05d1 \u05dc\u05e7\u05e8\u05d5\u05d0 \u05d0\u05ea \u05d4\u05d4\u05ea\u05d0\u05de\u05d4 \u05d9\u05d7\u05d3 \u05e2\u05dd \u05d7\u05d5\u05d6\u05e7 \u05d4\u05e8\u05d0\u05d9\u05d5\u05ea \u05d5\u05db\u05d9\u05e1\u05d5\u05d9 \u05d3\u05e8\u05d9\u05e9\u05d5\u05ea \u05d4\u05d7\u05d5\u05d1\u05d4, \u05d5\u05dc\u05d0 \u05dc\u05e4\u05d9 \u05d4\u05e6\u05d9\u05d5\u05df \u05d1\u05dc\u05d1\u05d3.")}`
+    : `The role sits in ${localizedDomainLabel(domain.primaryDomain, language)} / ${localizedDomainLabel(domain.roleFamily, language)}. The analysis found ${strengths.length} strong evidence-backed matches and ${weaknesses.length} real gaps or uncertain zones. Final fit should be read together with evidence strength and must-have coverage, not score alone.`;
   const tailoredBio = language === "he" || language === "mixed"
-    ? `מנהל הנדסי בכיר עם ניסיון מוכח בסביבות ייצור ותעשייה, המשלב הובלת פרויקטים, אחריות תהליכית, כלים הנדסיים, שיפור ביצועים והובלת ממשקים כפי שעולה מקורות החיים.`
-    : `Manufacturing and industrial engineering professional with proven scope in ${domain.roleFamily.replace(/_/g, " ")} environments, combining process ownership, engineering tools, operational improvement, and leadership signals that are supported by the CV.`;
+    ? he("\u05de\u05e0\u05d4\u05dc \u05d4\u05e0\u05d3\u05e1\u05d9 \u05d1\u05db\u05d9\u05e8 \u05e2\u05dd \u05e0\u05d9\u05e1\u05d9\u05d5\u05df \u05de\u05d5\u05db\u05d7 \u05d1\u05e1\u05d1\u05d9\u05d1\u05d5\u05ea \u05d9\u05d9\u05e6\u05d5\u05e8 \u05d5\u05ea\u05e2\u05e9\u05d9\u05d9\u05d4, \u05d4\u05de\u05e9\u05dc\u05d1 \u05d4\u05d5\u05d1\u05dc\u05ea \u05e4\u05e8\u05d5\u05d9\u05e7\u05d8\u05d9\u05dd, \u05d0\u05d7\u05e8\u05d9\u05d5\u05ea \u05ea\u05d4\u05dc\u05d9\u05db\u05d9\u05ea, \u05db\u05dc\u05d9\u05dd \u05d4\u05e0\u05d3\u05e1\u05d9\u05d9\u05dd, \u05e9\u05d9\u05e4\u05d5\u05e8 \u05d1\u05d9\u05e6\u05d5\u05e2\u05d9\u05dd \u05d5\u05d4\u05d5\u05d1\u05dc\u05ea \u05de\u05de\u05e9\u05e7\u05d9\u05dd \u05db\u05e4\u05d9 \u05e9\u05e2\u05d5\u05dc\u05d4 \u05de\u05e7\u05d5\u05e8\u05d5\u05ea \u05d4\u05d7\u05d9\u05d9\u05dd.")
+    : `Manufacturing and industrial engineering professional with proven scope in ${localizedDomainLabel(domain.roleFamily, language)} environments, combining process ownership, engineering tools, operational improvement, and leadership signals that are supported by the CV.`;
   return { profileSummary, tailoredBio, strengths, weaknesses, recommendations };
 }
 
@@ -742,11 +877,13 @@ function buildBulletOptimization(matches: RequirementMatch[], language: TextLang
     .filter((match) => match.state === "weakly_supported" || match.state === "uncertain")
     .slice(0, 3)
     .map((match) => ({
-      original: match.topEvidence?.cvSourceText || (language === "he" || language === "mixed" ? `אין ראיה ישירה ל-${match.requirement.label}.` : `No direct proof for ${match.requirement.label}.`),
+      original: match.topEvidence?.cvSourceText || (language === "he" || language === "mixed" ? `${he("\u05d0\u05d9\u05df \u05e8\u05d0\u05d9\u05d4 \u05d9\u05e9\u05d9\u05e8\u05d4 \u05dc-")}${localizedRequirementLabel(match.requirement.label, language)}.` : `No direct proof for ${match.requirement.label}.`),
       optimized: language === "he" || language === "mixed"
-        ? `אם זה נכון ומגובה בניסיון: הוסף ניסוח שמוכיח ${match.requirement.label} באמצעות היקף אחריות, כלי/שיטה ותוצאה מדידה.`
-        : `If accurate, add a clearer bullet that proves ${match.requirement.label} with scope, tool/method, and measurable impact.`,
-      rationale: language === "he" || language === "mixed" ? "שיפור ניסוח מבוסס ראיות בלבד, ללא הוספת ניסיון שלא קיים." : match.rationale
+        ? `${localizedRequirementLabel(match.requirement.label, language)} ${he("\u05d1\u05d0\u05d9\u05dd \u05dc\u05d9\u05d3\u05d9 \u05d1\u05d9\u05d8\u05d5\u05d9 \u05d3\u05e8\u05da \u05d4\u05d9\u05e7\u05e3 \u05d0\u05d7\u05e8\u05d9\u05d5\u05ea \u05d1\u05e8\u05d5\u05e8, \u05db\u05dc\u05d9 \u05e2\u05d1\u05d5\u05d3\u05d4 \u05e8\u05dc\u05d5\u05d5\u05e0\u05d8\u05d9\u05d9\u05dd \u05d5\u05ea\u05d5\u05e6\u05d0\u05d4 \u05de\u05d3\u05d9\u05d3\u05d4.")}`
+        : `${match.requirement.label} is demonstrated through clear ownership scope, relevant tools or methods, and measurable outcomes.`,
+      rationale: language === "he" || language === "mixed"
+        ? he("\u05d3\u05d5\u05d2\u05de\u05ea \u05e0\u05d9\u05e1\u05d5\u05d7 \u05de\u05d2\u05d5\u05d9\u05e1\u05ea \u05d4\u05de\u05d1\u05d5\u05e1\u05e1\u05ea \u05e2\u05dc \u05d4\u05e8\u05d0\u05d9\u05d5\u05ea \u05e9\u05db\u05d1\u05e8 \u05d6\u05d5\u05d4\u05d5, \u05dc\u05dc\u05d0 \u05d4\u05d5\u05e1\u05e4\u05ea \u05e0\u05d9\u05e1\u05d9\u05d5\u05df \u05d7\u05d3\u05e9.")
+        : match.rationale
     }));
 }
 
@@ -764,12 +901,12 @@ export function buildEvidenceBasedAnalysis(resumeText: string, jobDescription: s
 
   const matchedKeywords = matches
     .filter((match) => match.state === "matched" || match.state === "partially_matched")
-    .map((match) => match.requirement.label)
+    .map((match) => localizedRequirementLabel(match.requirement.label, resumeLanguage.language))
     .filter((value) => !GENERIC_TOKENS.has(normalizeText(value)))
     .slice(0, 10);
   const missingKeywords = matches
     .filter((match) => match.state === "missing" || match.state === "uncertain")
-    .map((match) => match.requirement.label)
+    .map((match) => localizedRequirementLabel(match.requirement.label, resumeLanguage.language))
     .filter((value) => !GENERIC_TOKENS.has(normalizeText(value)))
     .slice(0, 10);
 

@@ -1,3 +1,5 @@
+import { ROLE_TITLE_SYNONYMS } from "./roleTitleSynonyms";
+
 export interface CatalogEntry {
   canonical: string;
   aliases: string[];
@@ -35,6 +37,7 @@ export const manufacturingPack: ManufacturingPack = {
   key: "manufacturing_pack",
   displayName: "Industrial & Manufacturing",
   titlesCatalog: [
+    ...ROLE_TITLE_SYNONYMS,
     { canonical: "Factory Engineer", aliases: ["factory engineer", "plant engineer", "מהנדס מפעל", "מהנדס/ת מפעל"], roleFamily: "plant_engineering" },
     { canonical: "Manufacturing Engineer", aliases: ["manufacturing engineer", "production engineer", "מהנדס ייצור", "מהנדס/ת ייצור"], roleFamily: "manufacturing_engineering" },
     { canonical: "Process Engineer", aliases: ["process engineer", "מהנדס תהליך", "מהנדס/ת תהליך"], roleFamily: "process_engineering" },

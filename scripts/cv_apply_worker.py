@@ -19,23 +19,55 @@ from reportlab.platypus import Paragraph as PdfParagraph, SimpleDocTemplate, Spa
 
 BANNED_PHRASE_PATTERNS = [
     re.compile(r"\bif accurate\b", re.I),
+    re.compile(r"\bif relevant\b", re.I),
+    re.compile(r"\bif applicable\b", re.I),
     re.compile(r"\badd a bullet\b", re.I),
     re.compile(r"\bsuggested\b", re.I),
     re.compile(r"\brecommendation\b", re.I),
     re.compile(r"\bevidence-backed\b", re.I),
     re.compile(r"\bconsider adding\b", re.I),
-    re.compile(r"\bif relevant\b", re.I),
-    re.compile(r"\bif applicable\b", re.I),
     re.compile(r"\bimprove proof of\b", re.I),
     re.compile(r"\btailor this\b", re.I),
     re.compile(r"\bthe cv should\b", re.I),
     re.compile(r"\bthe candidate should\b", re.I),
+    re.compile(r"\bmanual review\b", re.I),
+    re.compile(r"\bneeds review\b", re.I),
+    re.compile(r"\bno evidence found\b", re.I),
     re.compile(r"\bedit plan\b", re.I),
     re.compile(r"\bplanner\b", re.I),
     re.compile(r"\bcoaching\b", re.I),
     re.compile(r"\banalysis\b", re.I),
     re.compile(r"\bapply recommendations?\b", re.I),
     re.compile(r"\brecruiter-ready\b", re.I),
+    re.compile(r"\bאם זה נכון\b"),
+    re.compile(r"\bאם רלוונטי\b"),
+    re.compile(r"\bאם קיים\b"),
+    re.compile(r"\bאם קיימת\b"),
+    re.compile(r"\bמומלץ\b"),
+    re.compile(r"\bהמלצ"),
+    re.compile(r"\bהוסף\b"),
+    re.compile(r"\bלהוסיף\b"),
+    re.compile(r"\bיש להוסיף\b"),
+    re.compile(r"\bכדאי להוסיף\b"),
+    re.compile(r"\bשפר\b"),
+    re.compile(r"\bחזק\b"),
+    re.compile(r"\bהמועמד צריך\b"),
+    re.compile(r"\bקורות החיים צריכים\b"),
+    re.compile(r"\bלא נמצאה ראיה\b"),
+    re.compile(r"\bנדרשת בדיקה\b"),
+    re.compile(r"\bבדיקה ידנית\b"),
+    re.compile(r"\bsi es cierto\b", re.I),
+    re.compile(r"\bsi aplica\b", re.I),
+    re.compile(r"\bse recomienda\b", re.I),
+    re.compile(r"\bagregue\b", re.I),
+    re.compile(r"\bañada\b", re.I),
+    re.compile(r"\brequiere revisión\b", re.I),
+    re.compile(r"\bsi c'est vrai\b", re.I),
+    re.compile(r"\bil est recommandé\b", re.I),
+    re.compile(r"\bajoutez\b", re.I),
+    re.compile(r"\bfalls zutreffend\b", re.I),
+    re.compile(r"\bempfehlung\b", re.I),
+    re.compile(r"\bfügen sie hinzu\b", re.I),
 ]
 
 BANNED_LINE_PATTERNS = [
@@ -249,6 +281,9 @@ def apply_docx(request: Dict[str, Any]) -> Tuple[str, str, List[str]]:
     warnings: List[str] = []
 
     for instruction in instructions:
+        if not instruction.get("safeToApply", False):
+            warnings.append(f"Skipped unsafe instruction in section {instruction['sectionLabel']}.")
+            continue
         action = instruction["action"]
         target = instruction.get("targetText") or ""
         replacement = instruction.get("replacementText") or ""
@@ -401,6 +436,9 @@ def apply_pdf(request: Dict[str, Any]) -> Tuple[str, str, List[str]]:
     updated_text = text
 
     for instruction in instructions:
+        if not instruction.get("safeToApply", False):
+            warnings.append(f"Skipped unsafe instruction in section {instruction['sectionLabel']}.")
+            continue
         action = instruction["action"]
         target = instruction.get("targetText") or ""
         replacement = instruction.get("replacementText") or ""

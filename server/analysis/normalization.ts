@@ -5,8 +5,10 @@ export function normalizeWhitespace(value: string): string {
 export function normalizeText(value: string): string {
   return normalizeWhitespace(value)
     .toLowerCase()
-    .replace(/[“”"']/g, "")
-    .replace(/[–—]/g, "-");
+    .replace(/([\u0590-\u05FF]{2,})[./](?:\u05D4|\u05EA)(?=\s|$)/gu, "$1")
+    .replace(/[\u201C\u201D"']/g, "")
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/[.,/\\()|[\]{}:;]+/g, " ");
 }
 
 export function slugify(value: string): string {

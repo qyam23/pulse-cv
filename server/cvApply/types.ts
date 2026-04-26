@@ -19,20 +19,43 @@ export type CvEditAction =
   | "normalize_format"
   | "leave_untouched";
 
-export interface CvEditInstruction {
+export interface DisplayRecommendation {
   id: string;
+  requirementId: string;
+  language: string;
+  message: string;
+  displayOnly: true;
+}
+
+export interface InternalEditInstruction {
+  id: string;
+  requirementId: string;
+  instruction: string;
+  internalOnly: true;
+}
+
+export interface FinalCvPatch {
+  id: string;
+  requirementId: string;
   sectionId: string;
   sectionLabel: string;
+  sourceLanguage: string;
   action: CvEditAction;
   targetText?: string;
   replacementText?: string;
   insertionAnchor?: string;
+  evidenceText: string[];
+  forbiddenClaims: string[];
+  safeToApply: boolean;
   rationale: string;
   linkedRequirementIds: string[];
   confidence: number;
+  riskLevel?: "low" | "medium" | "high";
   atsImpact?: "high" | "medium" | "low";
   recruiterReadabilityImpact?: "high" | "medium" | "low";
 }
+
+export type CvEditInstruction = FinalCvPatch;
 
 export interface CvSectionPlanSummary {
   id: string;
@@ -49,6 +72,8 @@ export interface CvEditPlan {
   warnings: string[];
   sections: CvSectionPlanSummary[];
   instructions: CvEditInstruction[];
+  displayRecommendations: DisplayRecommendation[];
+  internalInstructions: InternalEditInstruction[];
   untouchedSections: string[];
 }
 

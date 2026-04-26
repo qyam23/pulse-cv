@@ -1,8 +1,9 @@
 import crypto from "crypto";
 import type { FitAnalysis, RequirementMatch } from "../analysis/types";
 import { detectTextLanguage, languageCompatible, languageLabel, type TextLanguage } from "../analysis/language";
-import type { CvEditInstruction, CvEditPlan, CvSectionPlanSummary, ResumeSourceDocumentPayload } from "./types";
+import type { CvEditInstruction, CvEditPlan, CvSectionPlanSummary, DisplayRecommendation, InternalEditInstruction, ResumeSourceDocumentPayload } from "./types";
 import { prepareSafeEditPlan, sanitizeRecruiterFacingText } from "./finalContent";
+import { validateFinalCvSentence } from "./metaLanguageGuard";
 
 type ResumeSection = {
   id: string;
@@ -105,6 +106,43 @@ function collectLinkedRequirementIds(matches: RequirementMatch[], limit = 3): st
     .map((match) => match.requirement.id);
 }
 
+function buildPatch(
+  base: Omit<CvEditInstruction, "evidenceText" | "forbiddenClaims" | "safeToApply" | "riskLevel">,
+  evidenceText: string[],
+  forbiddenClaims: string[] = [],
+): CvEditInstruction | null {
+  const validation = validateFinalCvSentence(base.replacementText || "", base.sourceLanguage as TextLanguage);
+  const safeToApply = validation.safe && !!base.replacementText?.trim();
+  if (!safeToApply) return null;
+
+  return {
+    ...base,
+    evidenceText: evidenceText.filter(Boolean).slice(0, 3),
+    forbiddenClaims,
+    safeToApply,
+    riskLevel: base.confidence >= 0.78 ? "low" : base.confidence >= 0.66 ? "medium" : "high",
+  };
+}
+
+function buildDisplayRecommendation(requirementId: string, language: TextLanguage, message: string): DisplayRecommendation {
+  return {
+    id: `display-${stableId(`${requirementId}-${message}`)}`,
+    requirementId,
+    language,
+    message,
+    displayOnly: true,
+  };
+}
+
+function buildInternalInstruction(requirementId: string, instruction: string): InternalEditInstruction {
+  return {
+    id: `internal-${stableId(`${requirementId}-${instruction}`)}`,
+    requirementId,
+    instruction,
+    internalOnly: true,
+  };
+}
+
 function buildSummaryInstruction(
   analysis: FitAnalysis,
   sections: ResumeSection[],
@@ -123,10 +161,12 @@ function buildSummaryInstruction(
   if (summarySection && summarySection.lines.length >= 2) {
     const targetText = summarySection.lines.slice(1).join("\n").trim();
     if (targetText && normalizeText(targetText) !== normalizeText(sanitizedBio.text)) {
-      return {
+      return buildPatch({
         id: `instruction-${stableId(`summary-${targetText}`)}`,
+        requirementId: weakMatches[0]?.requirement.id || "summary",
         sectionId: summarySection.id,
         sectionLabel: summarySection.label,
+        sourceLanguage: targetLanguage,
         action: "replace_phrase",
         targetText,
         replacementText: sanitizedBio.text,
@@ -135,14 +175,16 @@ function buildSummaryInstruction(
         confidence: 0.78,
         atsImpact: "high",
         recruiterReadabilityImpact: "high",
-      };
+      }, [targetText]);
     }
   }
 
-  return {
+  return buildPatch({
     id: `instruction-${stableId("summary-insert")}`,
+    requirementId: weakMatches[0]?.requirement.id || "summary",
     sectionId: headerSection?.id || "section-top",
     sectionLabel: "Profile",
+    sourceLanguage: targetLanguage,
     action: "insert_bullet",
     replacementText: sanitizedBio.text,
     insertionAnchor: headerSection?.lines.slice(-1)[0] || "",
@@ -151,7 +193,7 @@ function buildSummaryInstruction(
     confidence: 0.72,
     atsImpact: "high",
     recruiterReadabilityImpact: "high",
-  };
+  }, [headerSection?.lines.slice(-1)[0] || ""]);
 }
 
 function buildBulletInstructions(
@@ -184,10 +226,12 @@ function buildBulletInstructions(
     })
     .filter((item): item is { item: { original: string; optimized: string; rationale: string }; sourceSection: ResumeSection } => Boolean(item))
     .slice(0, 3)
-    .map(({ item, sourceSection }, index) => ({
+    .map(({ item, sourceSection }, index) => buildPatch({
       id: `instruction-${stableId(`bullet-${item.original}-${item.optimized}-${index}`)}`,
+      requirementId: weakMatches.find((match) => item.rationale.includes(match.requirement.label) || item.optimized.includes(match.requirement.label))?.requirement.id || `bullet-${index}`,
       sectionId: sourceSection?.id || "section-experience",
       sectionLabel: sourceSection?.label || "Experience",
+      sourceLanguage: targetLanguage,
       action: "rewrite_bullet" as const,
       targetText: item.original.trim(),
       replacementText: item.optimized.trim(),
@@ -199,7 +243,8 @@ function buildBulletInstructions(
       confidence: 0.75,
       atsImpact: "medium" as const,
       recruiterReadabilityImpact: "high" as const,
-    }));
+    }, [item.original.trim(), item.rationale]))
+    .filter((item): item is CvEditInstruction => Boolean(item));
 }
 
 function buildSkillsInstruction(analysis: FitAnalysis, sections: ResumeSection[], resumeText: string): CvEditInstruction | null {
@@ -216,10 +261,13 @@ function buildSkillsInstruction(analysis: FitAnalysis, sections: ResumeSection[]
 
   if (!strongEvidence.length) return null;
 
-  return {
+  const resumeLanguage = detectTextLanguage(resumeText).language;
+  return buildPatch({
     id: `instruction-${stableId(`skills-${strongEvidence.join("|")}`)}`,
+    requirementId: analysis.evidenceMap.find((row) => strongEvidence.includes(row.requirement))?.requirementId || "skills",
     sectionId: skillsSection.id,
     sectionLabel: skillsSection.label,
+    sourceLanguage: resumeLanguage,
     action: "insert_bullet",
     replacementText: strongEvidence.join(" | "),
     insertionAnchor: skillsSection.lines.slice(-1)[0] || skillsSection.lines[0],
@@ -231,7 +279,7 @@ function buildSkillsInstruction(analysis: FitAnalysis, sections: ResumeSection[]
     confidence: 0.7,
     atsImpact: "medium",
     recruiterReadabilityImpact: "medium",
-  };
+  }, strongEvidence);
 }
 
 export function buildCvEditPlan(
@@ -242,6 +290,8 @@ export function buildCvEditPlan(
   const sections = extractSections(resumeText);
   const resumeLanguage = detectTextLanguage(resumeText);
   const instructions: CvEditInstruction[] = [];
+  const displayRecommendations: DisplayRecommendation[] = [];
+  const internalInstructions: InternalEditInstruction[] = [];
 
   const summaryInstruction = buildSummaryInstruction(analysis, sections, resumeLanguage.language);
   if (summaryInstruction) instructions.push(summaryInstruction);
@@ -250,6 +300,17 @@ export function buildCvEditPlan(
 
   const skillsInstruction = buildSkillsInstruction(analysis, sections, resumeText);
   if (skillsInstruction) instructions.push(skillsInstruction);
+
+  for (const message of (analysis.candidateRecommendations?.wordingFixes || []).slice(0, 4)) {
+    displayRecommendations.push(buildDisplayRecommendation("wording", resumeLanguage.language, message));
+  }
+  for (const message of (analysis.candidateRecommendations?.proofGaps || []).slice(0, 4)) {
+    displayRecommendations.push(buildDisplayRecommendation("proof-gap", resumeLanguage.language, message));
+  }
+  for (const item of analysis.bulletPointOptimization.slice(0, 4)) {
+    displayRecommendations.push(buildDisplayRecommendation("bullet-optimization", resumeLanguage.language, item.optimized));
+    internalInstructions.push(buildInternalInstruction("bullet-optimization", item.rationale));
+  }
 
   const touchedIds = new Set(instructions.map((instruction) => instruction.sectionId));
   const sectionSummaries: CvSectionPlanSummary[] = sections.map((section) => ({
@@ -291,6 +352,8 @@ export function buildCvEditPlan(
     warnings,
     sections: sectionSummaries,
     instructions,
+    displayRecommendations,
+    internalInstructions,
     untouchedSections: sectionSummaries.filter((section) => section.status === "unchanged").map((section) => section.label),
   };
   return prepareSafeEditPlan(rawPlan).plan;

@@ -198,17 +198,31 @@ interface ResumeSourceDocument {
 
 interface CvEditInstruction {
   id: string;
+  requirementId: string;
   sectionId: string;
   sectionLabel: string;
+  sourceLanguage: string;
   action: "replace_phrase" | "rewrite_bullet" | "insert_bullet" | "tighten_heading" | "normalize_format" | "leave_untouched";
   targetText?: string;
   replacementText?: string;
   insertionAnchor?: string;
+  evidenceText: string[];
+  forbiddenClaims: string[];
+  safeToApply: boolean;
   rationale: string;
   linkedRequirementIds: string[];
   confidence: number;
+  riskLevel?: "low" | "medium" | "high";
   atsImpact?: "high" | "medium" | "low";
   recruiterReadabilityImpact?: "high" | "medium" | "low";
+}
+
+interface DisplayRecommendation {
+  id: string;
+  requirementId: string;
+  language: string;
+  message: string;
+  displayOnly: true;
 }
 
 interface CvSectionPlanSummary {
@@ -226,6 +240,7 @@ interface CvEditPlan {
   warnings: string[];
   sections: CvSectionPlanSummary[];
   instructions: CvEditInstruction[];
+  displayRecommendations: DisplayRecommendation[];
   untouchedSections: string[];
 }
 
@@ -539,7 +554,7 @@ function badgeClasses(state: MatchState) {
 function scoreTone(score: number): { label: string; className: string } {
   if (score >= 80) return { label: "High confidence fit", className: "bg-emerald-500 text-white" };
   if (score >= 60) return { label: "Selective fit", className: "bg-amber-400 text-slate-900" };
-  return { label: "High review needed", className: "bg-rose-500 text-white" };
+  return { label: "Manual review required", className: "bg-rose-500 text-white" };
 }
 
 function groupEntries<T>(value: Record<string, T[]> | undefined): [string, T[]][] {
@@ -747,6 +762,19 @@ function EditPlanModal({
                   <p className="mt-2 text-sm leading-relaxed text-slate-500">Source file: {plan.sourceFileName}</p>
                 </div>
 
+                {plan.displayRecommendations?.length ? (
+                  <div className="rounded-[1.8rem] border border-slate-200 bg-white p-5">
+                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Display-only recommendations</p>
+                    <div className="mt-4 space-y-3">
+                      {plan.displayRecommendations.slice(0, 4).map((item) => (
+                        <div key={item.id} className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4 text-sm leading-relaxed text-slate-600">
+                          {item.message}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
                 {plan.warnings.length ? (
                   <div className="space-y-3">
                     {plan.warnings.map((warning, index) => (
@@ -790,6 +818,13 @@ function EditPlanModal({
                       <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-white">
                         {instruction.action.replace("_", " ")}
                       </span>
+                      <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${
+                        instruction.riskLevel === "low" ? "bg-emerald-100 text-emerald-800" :
+                        instruction.riskLevel === "medium" ? "bg-amber-100 text-amber-800" :
+                        "bg-rose-100 text-rose-800"
+                      }`}>
+                        {instruction.riskLevel || "review"}
+                      </span>
                       <p className="font-black text-slate-900">{instruction.sectionLabel}</p>
                     </div>
                     <p className="mt-3 text-sm leading-relaxed text-slate-500">{instruction.rationale}</p>
@@ -803,6 +838,16 @@ function EditPlanModal({
                       <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
                         <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-700">After</p>
                         <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-800">{instruction.replacementText}</p>
+                      </div>
+                    ) : null}
+                    {instruction.evidenceText?.length ? (
+                      <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Evidence</p>
+                        <div className="mt-2 space-y-2 text-sm leading-relaxed text-slate-700">
+                          {instruction.evidenceText.map((evidence, index) => (
+                            <p key={`${instruction.id}-evidence-${index}`}>{evidence}</p>
+                          ))}
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -1417,7 +1462,7 @@ export default function App() {
                         ? "Strong evidence-backed fit"
                         : result.jobFitDecision === "Medium"
                           ? "Selective fit with real gaps"
-                          : "High review needed before applying"}
+                          : "Manual review required before applying"}
                     </h2>
                     <p className="max-w-2xl text-base leading-relaxed text-indigo-100 md:text-lg">
                       {result.profileSummary}
@@ -1500,7 +1545,7 @@ export default function App() {
                 <SectionHeader
                   icon={Wand2}
                   title="Apply recommendations"
-                  subtitle="Open beta: generate an updated Word CV from the original uploaded file, review the edit plan first, then download the updated version and the change report."
+                  subtitle="Open beta: generate an updated Word CV from the original uploaded file, review only the low-risk evidence-backed patches first, then download the updated version and the change report."
                 />
                 <div className="mt-6 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
                   <div className="rounded-[1.8rem] border border-slate-200 bg-slate-50/80 p-5">
